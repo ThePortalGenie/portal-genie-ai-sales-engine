@@ -1,0 +1,27 @@
+{
+  "name": "portal-genie-ai-sales-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-assisted sales intelligence layer for The Portal Genie. Zoho CRM remains the CRM system of record.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/env.test.ts tests/cli-args.test.ts tests/zoho-http.test.ts tests/zoho-oauth.test.ts tests/zoho-discovery.test.ts tests/fallback-fields.test.ts tests/commercial-position.test.ts tests/usage-import.test.ts tests/crm-explorer.test.ts tests/web-app.test.ts tests/email-normalize.test.ts tests/intelligence.test.ts tests/real-world-interactions.test.ts tests/event-consolidation.test.ts tests/organisation-graph.test.ts tests/sales-events.test.ts",
+    "zoho:auth": "tsx src/cli/zoho-auth.ts",
+    "zoho:discover": "tsx src/cli/zoho-discover.ts",
+    "usage:import": "tsx src/cli/usage-import.ts",
+    "start": "tsx src/server/index.ts"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "openai": "^7.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,13 @@
+export { ZohoCrmReadClient } from "./integrations/zoho/client.js";
+export { runDiscovery } from "./integrations/zoho/discovery.js";
+export { READ_ONLY_SCOPES, ZOHO_DOCS } from "./integrations/zoho/constants.js";
+export { interpretCommercialPosition } from "./domain/commercial-position.js";
+export { CUSTOMER_JOURNEY_STAGES, ACTIVATION_MILESTONES } from "./domain/journey.js";
+export { combineAccountIntelligence } from "./domain/account-intelligence.js";
+export { importUsageFile } from "./ingestion/usage/import-file.js";
+export { ImportedUsageReader } from "./ingestion/usage/imported-reader.js";
+export { UnavailablePortalGenieUsageReader } from "./integrations/portal-genie/reader.js";
+export { htmlToPlainText } from "./content/html-to-text.js";
+export { buildEmailInteractionFacts, normalizeZohoEmail } from "./integrations/zoho/normalize-email.js";
+export { searchCrmRecords } from "./services/crm-search.js";
+export { buildRelationshipView } from "./web/relationship-view.js";

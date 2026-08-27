@@ -1,0 +1,26 @@
+{
+  "note": "Personal/public mailbox domains. Same-domain organisation matching must not use these.",
+  "domains": [
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "msn.com",
+    "yahoo.com",
+    "yahoo.co.uk",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "aol.com",
+    "proton.me",
+    "protonmail.com",
+    "gmx.com",
+    "gmx.co.uk",
+    "mail.com",
+    "zoho.com",
+    "ymail.com",
+    "btinternet.com",
+    "sky.com"
+  ]
+}

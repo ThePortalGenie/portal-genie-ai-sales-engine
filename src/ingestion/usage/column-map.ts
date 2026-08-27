@@ -1,0 +1,66 @@
+import type { UsageFieldName } from "../../domain/normalized-usage.js";
+
+const HEADER_ALIASES: Record<string, UsageFieldName> = {
+  portalgenieaccountid: "portalGenieAccountId",
+  pgaccountid: "portalGenieAccountId",
+  accountid: "portalGenieAccountId",
+  zohoid: "zohoId",
+  zohocontactid: "zohoId",
+  zohoaccountid: "zohoId",
+  company: "company",
+  companyname: "company",
+  accountname: "company",
+  primaryemail: "primaryEmail",
+  email: "primaryEmail",
+  emailaddress: "primaryEmail",
+  domain: "domain",
+  emaildomain: "domain",
+  website: "domain",
+  registrationdate: "registrationDate",
+  registered: "registrationDate",
+  registeredat: "registrationDate",
+  country: "country",
+  industry: "industry",
+  accountingsoftware: "accountingSoftware",
+  accountingplatform: "accountingSoftware",
+  accountingsoftwareconnected: "accountingConnected",
+  connected: "accountingConnected",
+  xeroconnected: "accountingConnected",
+  accountingsoftwareconnectiondate: "accountingConnectedAt",
+  connectiondate: "accountingConnectedAt",
+  connectedat: "accountingConnectedAt",
+  lastportalgenievisit: "lastVisitAt",
+  lastvisit: "lastVisitAt",
+  lastseen: "lastVisitAt",
+  visitslast7days: "visitsLast7Days",
+  visits7d: "visitsLast7Days",
+  visitslast30days: "visitsLast30Days",
+  visits30d: "visitsLast30Days",
+  paymentsprocessed: "paymentsProcessed",
+  payments: "paymentsProcessed",
+  paymentsprocessedlast30days: "paymentsLast30Days",
+  paymentslast30days: "paymentsLast30Days",
+  payments30d: "paymentsLast30Days",
+  documentsviewed: "documentsViewed",
+  documents: "documentsViewed",
+  documentsviewedlast30days: "documentsViewedLast30Days",
+  documentlast30days: "documentsViewedLast30Days",
+  emailssent: "emailsSent",
+  emailssentlast30days: "emailsSentLast30Days",
+  lastmeaningfulactivity: "lastMeaningfulActivityAt",
+  lastactivity: "lastMeaningfulActivityAt",
+  payingstatus: "payingStatus",
+  paying: "payingStatus",
+  ispaying: "payingStatus",
+  partnerstatus: "partnerStatus",
+  partner: "partnerStatus",
+  referrals: "referrals",
+};
+
+export function canonicalHeader(header: string): string {
+  return header.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+export function mapHeader(header: string): UsageFieldName | undefined {
+  return HEADER_ALIASES[canonicalHeader(header)];
+}

@@ -1,0 +1,30 @@
+---
+description: Commercial mission and feature-priority rules for the Sales Engine
+alwaysApply: true
+---
+
+# Mission
+
+Build an AI-assisted Sales Engine so one person can run new-business, activation, reactivation, and Partner development.
+
+Governing KPI: **800 paying Portal Genie registrations by February 2027.**
+
+Every feature must materially contribute to at least one of:
+
+1. Generating new paying registrations
+2. Increasing conversion of existing leads
+3. Increasing activation/usage of registered accounts
+4. Creating and activating referral Partners
+5. Generating qualified sales conversations
+6. Improving conversion rates
+7. Reducing manual sales administration
+
+If it does not, do not prioritise it.
+
+Guiding question when uncertain:
+
+> What is the highest-leverage thing we can build now that increases the probability of reaching 800 paying registrations by February 2027 while minimising human sales workload?
+
+Registration is not the final conversion event. Prioritise the journey through activation, habit, paying, expansion, Partner, and referrals.
+
+Do not silently change these business rules.

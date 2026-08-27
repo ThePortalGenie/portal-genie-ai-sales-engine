@@ -1,0 +1,16 @@
+---
+description: Zoho CRM, identity, evidence, and data-integrity rules
+alwaysApply: true
+---
+
+# Zoho and data integrity
+
+Initial Zoho integration is **READ ONLY**. Do not add CRM write permissions until read/analysis behaviour is proven.
+
+Never invent Zoho API endpoints or schema. Verify against current official Zoho CRM v8 docs before implementation. UI-visible data is not automatically available via API.
+
+Preserve source IDs. Separate verified, imported, and AI-inferred data, with source, confidence, and last-verified date. Never silently overwrite verified CRM data with AI output.
+
+Identity resolution is deterministic first (normalised email, domain, company identifiers, normalised name, existing Zoho relationships, later Portal Genie account/user IDs). Do not auto-merge uncertain identities; flag them for review.
+
+AI summaries must never replace source records. Recommendations must be explainable with evidence. Assumptions must not be presented as verified facts.

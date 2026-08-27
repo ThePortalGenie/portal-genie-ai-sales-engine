@@ -1,0 +1,16 @@
+---
+description: Incremental delivery, testing, and definition of done
+alwaysApply: true
+---
+
+# Development method
+
+Before a major feature: state the business problem, contribution to the 800-registration target, minimum implementation, required data, and risks. Implement the smallest working version. Test against representative data. Measure usefulness. Only then expand.
+
+Do not silently expand scope. Explain significant architectural complexity before implementing it.
+
+A feature is done when it works against representative data, errors are handled, relevant tests pass, security is considered, configuration is documented, output is commercially useful, and automated decisions are auditable.
+
+Inspect existing code before creating duplicates. Reuse services. Keep changes small enough to test. Run relevant tests after changes. Do not report a feature complete until tested.
+
+Keep the system maintainable by a very small team. Reliability over impressive complexity. Never add dependencies without a clear reason.

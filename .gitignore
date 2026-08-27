@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+diagnostics/*.json
+diagnostics/intelligence/
+!diagnostics/.gitkeep
+!diagnostics/.gitkeep
+data/*.csv
+data/*.xlsx
+data/*.xls
+!data/usage-template.csv
+.DS_Store
+Thumbs.db

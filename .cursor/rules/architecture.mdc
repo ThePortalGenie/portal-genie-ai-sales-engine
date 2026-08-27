@@ -1,0 +1,25 @@
+---
+description: System of record boundaries and what not to build yet
+alwaysApply: true
+---
+
+# Architecture
+
+Do not replace Zoho CRM or duplicate The Portal Genie.
+
+- **Zoho CRM** = relationship/CRM system of record
+- **The Portal Genie** = account, registration, and product-usage system of record
+- **Sales Engine** = intelligence, prioritisation, orchestration, automation
+- **Human** = high-value sales and commercial decisions
+
+Principle: **AI handles volume. Human handles value.**
+
+Sequence: Zoho Discovery → Sales Intelligence Profile → Portal Genie Usage Discovery → unified account intelligence → leading indicators → next-best-action → human queue → controlled outreach → prospecting.
+
+Do not skip ahead to sales dashboards, autonomous outreach, prospect generation, or a live Portal Genie database/API. A read-only CRM Explorer UI over the existing Zoho connector is in scope. Usage may be imported from CSV/XLSX through a normalisation layer. Registration is not the final conversion event.
+
+The Sales Engine stores IDs, aggregates, lifecycle, intelligence, and recommended actions. Zoho stays authoritative for CRM data. Portal Genie stays authoritative for raw product behaviour.
+
+Anti-patterns: replacement CRM, unnecessary dashboards, premature microservices, many AI agents before one workflow works, automating outbound before message quality is proven.
+
+Prefer: simple → measurable → working → automated → scalable.

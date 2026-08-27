@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Portal Genie Sales Engine</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <strong>Sales Engine</strong>
+        <span class="muted">Read-only Zoho CRM</span>
+      </div>
+      <nav>
+        <a href="#explorer">CRM Explorer</a>
+        <a href="#usage">Usage Data</a>
+        <a href="#settings">Settings</a>
+      </nav>
+      <span id="zoho-pill" class="pill">Zoho: checking</span>
+    </header>
+
+    <main>
+      <section id="page-explorer" class="page">
+        <h1>CRM Explorer</h1>
+        <p class="lede">Search Zoho Contacts, Leads, and Accounts. Results are not merged automatically.</p>
+        <form id="search-form" class="row">
+          <input id="search-q" type="search" placeholder="Email, name, company, or Zoho ID" autocomplete="off" />
+          <button type="submit">Search</button>
+        </form>
+        <p id="search-status" class="muted"></p>
+        <div id="search-results"></div>
+        <div id="relationship"></div>
+      </section>
+
+      <section id="page-usage" class="page hidden">
+        <h1>Usage Data</h1>
+        <p class="lede">Portal Genie usage is imported from CSV. There is no live product database connection.</p>
+        <p id="usage-status" class="muted"></p>
+        <form id="usage-form">
+          <label>Upload CSV<textarea id="usage-csv" rows="8" placeholder="Paste CSV or use the file picker"></textarea></label>
+          <input id="usage-file" type="file" accept=".csv,text/csv" />
+          <button type="submit">Import CSV</button>
+        </form>
+      </section>
+
+      <section id="page-settings" class="page hidden">
+        <h1>Settings → Zoho CRM</h1>
+        <p class="lede">Credentials and tokens stay on the server. This UI never displays secrets.</p>
+        <div id="connection-card" class="card"></div>
+        <form id="connect-form" class="card">
+          <h2>Connect Zoho</h2>
+          <p class="muted">Paste a Self Client grant token. It is exchanged server-side and is not stored in the page.</p>
+          <label>Grant token<input id="grant-code" type="password" autocomplete="off" /></label>
+          <div class="row">
+            <button type="submit">Connect Zoho</button>
+            <button type="button" id="test-connection">Test Connection</button>
+            <a class="button" href="/api/zoho/oauth/start">Start OAuth redirect</a>
+          </div>
+          <p id="connect-status" class="muted"></p>
+        </form>
+      </section>
+    </main>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

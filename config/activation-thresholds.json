@@ -1,0 +1,10 @@
+{
+  "calibrated": false,
+  "notes": "Interim defaults. Recalibrate after analysing real Portal Genie usage against paying conversion.",
+  "dormantAfterDays": 30,
+  "decliningVisitRatio": 0.5,
+  "activeMinVisitsLast30Days": 4,
+  "highlyActiveMinVisitsLast30Days": 12,
+  "activatedRequiresAccountingConnection": true,
+  "activatedMinMeaningfulActions": 1
+}

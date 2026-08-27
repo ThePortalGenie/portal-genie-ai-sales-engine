@@ -1,0 +1,22 @@
+---
+description: Usage intelligence, leading indicators, and Portal Genie boundary
+alwaysApply: true
+---
+
+# Usage intelligence
+
+Do not build a live Portal Genie database or API integration until there is a demonstrated need.
+
+Initial usage source: **uploaded CSV/XLSX**. Later adapters (scheduled import, API, reporting DB) must produce the same `NormalizedUsageProfile`. Sales intelligence must not depend on the ingestion method.
+
+Do not duplicate the Portal Genie database. Store external IDs, aggregates, lifecycle, scores, trends, and recommended actions only.
+
+Never invent Portal Genie live schema or API endpoints.
+
+Activation thresholds must be configurable. Do not treat interim defaults as permanent until usage is analysed against paying conversion.
+
+Treat accounting-software connection as a major activation signal. Usage fields are product-behaviour evidence, not CRM facts.
+
+If product usage is unknown, do not treat it as low usage. Label it unavailable.
+
+Identity matching is deterministic first. Uncertain matches are flagged for review. AI must not silently merge accounts.
