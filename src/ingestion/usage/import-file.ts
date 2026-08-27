@@ -7,10 +7,15 @@ import type { NormalizedUsageProfile, UsageIngestionKind } from "../../domain/no
 
 export type UsageImportResult = {
   profiles: NormalizedUsageProfile[];
+  accepted: NormalizedUsageProfile[];
+  rejected: NormalizedUsageProfile[];
   headers: string[];
   mappedHeaders: string[];
   unmappedHeaders: string[];
   rowCount: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  warnings: string[];
 };
 
 function kindFromPath(filePath: string): UsageIngestionKind {
@@ -41,11 +46,19 @@ export async function importUsageFile(filePath: string): Promise<UsageImportResu
   });
   const mappedHeaders = headers.filter((header) => mapHeader(header));
   const unmappedHeaders = headers.filter((header) => !mapHeader(header));
+  const accepted = profiles.filter((profile) => profile.accepted);
+  const rejected = profiles.filter((profile) => !profile.accepted);
+  const warnings = profiles.flatMap((profile) => profile.warnings);
   return {
     profiles,
+    accepted,
+    rejected,
     headers,
     mappedHeaders,
     unmappedHeaders,
     rowCount: profiles.length,
+    acceptedCount: accepted.length,
+    rejectedCount: rejected.length,
+    warnings,
   };
 }

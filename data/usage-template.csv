@@ -1,3 +1,3 @@
-Portal Genie Account ID,Company,Primary email,Domain,Registration date,Country,Industry,Accounting software,Accounting software connected,Accounting software connection date,Last Portal Genie visit,Visits last 7 days,Visits last 30 days,Payments processed,Payments processed last 30 days,Documents viewed,Documents viewed last 30 days,Emails sent,Emails sent last 30 days,Last meaningful activity,Paying status,Partner status,Referrals,Zoho ID
-PG-1001,ABC Accounting,jane@abcaccounting.com,abcaccounting.com,2025-03-12,Australia,Accounting,Xero,Yes,2025-03-14,2026-08-20,6,14,0,0,38,22,9,4,2026-08-20,No,No,0,
-PG-1002,Example Ltd,unused@example.com,example.com,2026-01-05,United Kingdom,Retail,None,No,, ,0,0,0,0,0,0,0,0,,No,No,0,
+Client ID,First Name,Surname,Email Address,Accounting Software Connected,Accounting Platform,Last Login Date,Portal Visits — Current Month,Portal Visits — Previous Month,Portal Visits — Two Months Ago,Data Used For Document Uploads
+PG-1001,Jane,Smith,jane@abcaccounting.com,YES,XERO,2026-08-20,17,12,9,1.2 GB
+PG-1002,Pat,Unused,unused@example.com,NO,UNKNOWN,,0,0,0,0

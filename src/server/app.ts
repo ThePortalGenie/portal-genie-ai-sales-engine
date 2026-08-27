@@ -13,6 +13,7 @@ import { PRIMARY_MODULES } from "../integrations/zoho/constants.js";
 import { parseCsv } from "../ingestion/usage/parse-csv.js";
 import { normalizeUsageRecords, rowsToRawRecords } from "../ingestion/usage/normalize.js";
 import { combineAccountIntelligence } from "../domain/account-intelligence.js";
+import { loadUsageImportMeta, usageImportIsNewerThan } from "../intelligence/usage-match.js";
 import { loadActivationThresholds } from "../config/activation-thresholds.js";
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL("../web/public", import.meta.url)));
@@ -199,6 +200,26 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       return;
     }
 
+    if (method === "GET" && url.pathname === "/api/usage/template") {
+      const templatePath = resolve(process.cwd(), "data/usage-template.csv");
+      if (!existsSync(templatePath)) {
+        send(res, 404, { error: "Usage template is not available." });
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="portal-genie-usage-template.csv"',
+        "Cache-Control": "no-store",
+      });
+      createReadStream(templatePath).pipe(res);
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/usage/rows") {
+      send(res, 200, usageRows());
+      return;
+    }
+
     if (method === "POST" && url.pathname === "/api/usage/import-csv") {
       const body = await readJson(req);
       const csv = typeof body.csv === "string" ? body.csv : "";
@@ -224,7 +245,15 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         return;
       }
       const stored = loadCommercialProfile(moduleName, id);
-      send(res, 200, stored ? { analysed: true, analysis: stored } : { analysed: false });
+      const usageMeta = loadUsageImportMeta();
+      send(res, 200, stored
+        ? {
+            analysed: true,
+            analysis: stored,
+            usageStale: usageImportIsNewerThan(stored.analysedAt, usageMeta.importedAt),
+            usageImportedAt: usageMeta.importedAt,
+          }
+        : { analysed: false, usageImportedAt: usageMeta.importedAt });
       return;
     }
 
@@ -348,30 +377,127 @@ function servePublic(res: ServerResponse, relativePath: string): void {
   createReadStream(filePath).pipe(res);
 }
 
-function usageStatus(): { imported: boolean; rowCount: number; file?: string } {
+function usageStatus(): {
+  imported: boolean;
+  rowCount: number;
+  accepted?: number;
+  rejected?: number;
+  warnings?: number;
+  importedAt?: string;
+  file?: string;
+  analysedMayBeStale?: boolean;
+} {
   const filePath = resolve(process.cwd(), "diagnostics/usage-import.json");
   if (!existsSync(filePath)) return { imported: false, rowCount: 0 };
   try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as { counts?: { rows?: number }; source?: string };
-    return { imported: true, rowCount: parsed.counts?.rows ?? 0, file: parsed.source };
+    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as {
+      counts?: { rows?: number; accepted?: number; rejected?: number };
+      source?: string;
+      importedAt?: string;
+      warnings?: string[];
+    };
+    return {
+      imported: true,
+      rowCount: parsed.counts?.rows ?? 0,
+      accepted: parsed.counts?.accepted,
+      rejected: parsed.counts?.rejected,
+      warnings: parsed.warnings?.length,
+      importedAt: parsed.importedAt,
+      file: parsed.source,
+    };
   } catch {
     return { imported: false, rowCount: 0 };
+  }
+}
+
+function usageRows() {
+  const filePath = resolve(process.cwd(), "diagnostics/usage-import.json");
+  if (!existsSync(filePath)) return { imported: false, rows: [], rejected: [], warnings: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as {
+      importedAt?: string;
+      source?: string;
+      warnings?: string[];
+      rejected?: Array<{ rowNumber?: number; reason?: string }>;
+      accounts?: Array<{ usageIntelligence?: { profile?: {
+        accepted?: boolean;
+        rejectionReason?: string;
+        warnings?: string[];
+        identity?: { portalGenieAccountId?: string; primaryEmail?: string; firstName?: string; surname?: string };
+        accountingConnected?: boolean;
+        accountingPlatform?: string;
+        lastLoginAt?: string;
+        portalVisitsCurrentMonth?: number;
+        portalVisitsPreviousMonth?: number;
+        portalVisitsTwoMonthsAgo?: number;
+        documentUploadUsage?: { original?: string };
+        fieldQuality?: Record<string, string>;
+        source?: { rowNumber?: number };
+      } } }>;
+    };
+    const rows = (parsed.accounts ?? []).map((account) => {
+      const profile = account.usageIntelligence?.profile;
+      return {
+        rowNumber: profile?.source?.rowNumber,
+        clientId: profile?.identity?.portalGenieAccountId,
+        name: [profile?.identity?.firstName, profile?.identity?.surname].filter(Boolean).join(" ") || undefined,
+        email: profile?.identity?.primaryEmail,
+        accountingConnected: profile?.accountingConnected === undefined ? "UNKNOWN" : profile.accountingConnected ? "YES" : "NO",
+        accountingPlatform: profile?.accountingPlatform ?? "UNKNOWN",
+        lastLoginAt: profile?.lastLoginAt ?? "UNKNOWN",
+        portalVisitsCurrentMonth: profile?.portalVisitsCurrentMonth ?? "UNKNOWN",
+        portalVisitsPreviousMonth: profile?.portalVisitsPreviousMonth ?? "UNKNOWN",
+        portalVisitsTwoMonthsAgo: profile?.portalVisitsTwoMonthsAgo ?? "UNKNOWN",
+        documentUploadUsage: profile?.documentUploadUsage?.original ?? "UNKNOWN",
+        accepted: profile?.accepted !== false,
+        warnings: profile?.warnings ?? [],
+      };
+    });
+    return {
+      imported: true,
+      importedAt: parsed.importedAt,
+      file: parsed.source,
+      rows,
+      rejected: parsed.rejected ?? rows.filter((row) => !row.accepted),
+      warnings: parsed.warnings ?? [],
+    };
+  } catch {
+    return { imported: false, rows: [], rejected: [], warnings: [] };
   }
 }
 
 function importCsvText(csv: string, fileName: string) {
   const parsed = parseCsv(csv);
   const records = rowsToRawRecords(parsed.headers, parsed.rows);
-  const profiles = normalizeUsageRecords(records, { kind: "csv", fileName });
+  const importedAt = new Date().toISOString();
+  const profiles = normalizeUsageRecords(records, { kind: "csv", fileName, importedAt });
   const thresholds = loadActivationThresholds();
-  const accounts = profiles.map((profile) => combineAccountIntelligence({ usage: profile, thresholds }));
+  const accepted = profiles.filter((profile) => profile.accepted);
+  const rejected = profiles.filter((profile) => !profile.accepted);
+  const warnings = profiles.flatMap((profile) => profile.warnings);
+  const accounts = accepted.map((profile) => combineAccountIntelligence({ usage: profile, thresholds }));
   const payload = {
     source: fileName,
-    importedAt: new Date().toISOString(),
-    counts: { rows: profiles.length },
+    importedAt,
+    openaiTriggered: false,
+    counts: { rows: profiles.length, accepted: accepted.length, rejected: rejected.length },
+    warnings,
+    rejected: rejected.map((profile) => ({
+      rowNumber: profile.source.rowNumber,
+      reason: profile.rejectionReason,
+    })),
     accounts,
   };
   mkdirSync(resolve(process.cwd(), "diagnostics"), { recursive: true });
   writeFileSync(resolve(process.cwd(), "diagnostics/usage-import.json"), `${JSON.stringify(payload, null, 2)}\n`);
-  return { imported: true, rowCount: profiles.length, file: fileName };
+  return {
+    imported: true,
+    rowCount: profiles.length,
+    accepted: accepted.length,
+    rejected: rejected.length,
+    warnings,
+    importedAt,
+    file: fileName,
+    openaiTriggered: false,
+  };
 }

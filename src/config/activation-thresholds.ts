@@ -15,5 +15,10 @@ export function loadActivationThresholds(filePath?: string): ActivationThreshold
     ...DEFAULT_ACTIVATION_THRESHOLDS,
     ...parsed,
     calibrated: parsed.calibrated === true,
+    recentLoginDays: parsed.recentLoginDays ?? DEFAULT_ACTIVATION_THRESHOLDS.recentLoginDays,
+    staleLoginDays: parsed.staleLoginDays ?? parsed.dormantAfterDays ?? DEFAULT_ACTIVATION_THRESHOLDS.staleLoginDays,
+    portalVisitTrendMinDelta:
+      parsed.portalVisitTrendMinDelta ?? DEFAULT_ACTIVATION_THRESHOLDS.portalVisitTrendMinDelta,
+    crmQuietAfterDays: parsed.crmQuietAfterDays ?? DEFAULT_ACTIVATION_THRESHOLDS.crmQuietAfterDays,
   };
 }

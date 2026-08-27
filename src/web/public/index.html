@@ -109,12 +109,14 @@
 
           <section id="page-usage" class="page hidden">
             <h2 class="page-heading">Usage Intelligence</h2>
-            <p class="lede">Portal Genie usage is imported from CSV or XLSX. There is no live product database in this milestone.</p>
+            <p class="lede">Import Portal Genie subscriber usage from CSV. There is no live product database in this milestone. Import never triggers OpenAI.</p>
             <div class="card callout">
-              <h3>How to read usage later</h3>
-              <p><strong>Last login date</strong> is subscriber authentication/activity — when the Portal Genie user last signed in.</p>
-              <p><strong>Portal visits</strong> count how many of that subscriber’s clients visited their portal, not how often the subscriber logged in.</p>
-              <p class="muted">Do not treat those two metrics as the same thing. Current import still uses the existing CSV fields only.</p>
+              <h3>How to read this file</h3>
+              <p><strong>Last login date</strong> is subscriber authentication — when that Portal Genie user last signed in.</p>
+              <p><strong>Portal visits</strong> = visits by the subscriber's clients. They are not subscriber logins. Do not treat those two metrics as the same thing.</p>
+              <p><strong>Blank is UNKNOWN</strong>, not zero. A recorded 0 is a known zero.</p>
+              <p class="muted">Portal Genie usage never changes the Nagging Panda relationship by itself.</p>
+              <p><a href="/api/usage/template">Download CSV template</a></p>
             </div>
             <p id="usage-status" class="status-note"></p>
             <form id="usage-form" class="card">
@@ -123,6 +125,7 @@
               <input id="usage-file" type="file" accept=".csv,text/csv" />
               <button type="submit">Import CSV</button>
             </form>
+            <div id="usage-import-result" class="section"></div>
           </section>
 
           <section id="page-pipeline" class="page hidden">

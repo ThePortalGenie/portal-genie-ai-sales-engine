@@ -1,7 +1,12 @@
+import type { AccountingPlatform } from "./usage.js";
+import type { DocumentUploadUsage, UsageFieldQuality } from "./portal-genie-usage.js";
+
 export const EXPECTED_USAGE_FIELDS = [
   "portalGenieAccountId",
   "zohoId",
   "company",
+  "firstName",
+  "surname",
   "primaryEmail",
   "domain",
   "registrationDate",
@@ -10,7 +15,12 @@ export const EXPECTED_USAGE_FIELDS = [
   "accountingSoftware",
   "accountingConnected",
   "accountingConnectedAt",
+  "lastLoginAt",
   "lastVisitAt",
+  "portalVisitsCurrentMonth",
+  "portalVisitsPreviousMonth",
+  "portalVisitsTwoMonthsAgo",
+  "documentUploadUsage",
   "visitsLast7Days",
   "visitsLast30Days",
   "paymentsProcessed",
@@ -40,6 +50,8 @@ export type NormalizedUsageProfile = {
     portalGenieAccountId?: string;
     zohoId?: string;
     company?: string;
+    firstName?: string;
+    surname?: string;
     primaryEmail?: string;
     domain?: string;
   };
@@ -47,9 +59,15 @@ export type NormalizedUsageProfile = {
   country?: string;
   industry?: string;
   accountingSoftware?: string;
+  accountingPlatform?: AccountingPlatform;
   accountingConnected?: boolean;
   accountingConnectedAt?: string;
+  lastLoginAt?: string;
   lastVisitAt?: string;
+  portalVisitsCurrentMonth?: number;
+  portalVisitsPreviousMonth?: number;
+  portalVisitsTwoMonthsAgo?: number;
+  documentUploadUsage?: DocumentUploadUsage;
   visitsLast7Days?: number;
   visitsLast30Days?: number;
   paymentsProcessed?: number;
@@ -66,6 +84,10 @@ export type NormalizedUsageProfile = {
   referrals?: number;
   missingFields: UsageFieldName[];
   extras: Record<string, string>;
+  fieldQuality: UsageFieldQuality;
+  warnings: string[];
+  accepted: boolean;
+  rejectionReason?: string;
 };
 
 export type ActivationThresholds = {
@@ -77,17 +99,30 @@ export type ActivationThresholds = {
   highlyActiveMinVisitsLast30Days: number;
   activatedRequiresAccountingConnection: boolean;
   activatedMinMeaningfulActions: number;
+  /** Subscriber last-login within this many days is RECENT_LOGIN. Interim default. */
+  recentLoginDays: number;
+  /** Subscriber last-login older than this is LOGIN_STALE. Defaults to dormantAfterDays when omitted. */
+  staleLoginDays: number;
+  /** Ignore portal-visit trend changes smaller than this absolute count. */
+  portalVisitTrendMinDelta: number;
+  /** CRM inbound/activity older than this (or absent) can support CRM_QUIET signals. */
+  crmQuietAfterDays: number;
 };
 
 export const DEFAULT_ACTIVATION_THRESHOLDS: ActivationThresholds = {
   calibrated: false,
-  notes: "Interim defaults. Recalibrate after analysing real Portal Genie usage against paying conversion.",
+  notes:
+    "Interim defaults. Recalibrate after analysing real Portal Genie usage against paying conversion. recentLoginDays, staleLoginDays, portalVisitTrendMinDelta, and crmQuietAfterDays are judgement thresholds — not scores.",
   dormantAfterDays: 30,
   decliningVisitRatio: 0.5,
   activeMinVisitsLast30Days: 4,
   highlyActiveMinVisitsLast30Days: 12,
   activatedRequiresAccountingConnection: true,
   activatedMinMeaningfulActions: 1,
+  recentLoginDays: 14,
+  staleLoginDays: 30,
+  portalVisitTrendMinDelta: 2,
+  crmQuietAfterDays: 45,
 };
 
 export type InitialActivationState =

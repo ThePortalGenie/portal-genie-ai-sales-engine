@@ -309,11 +309,20 @@ function renderRelationship(view, usage, moduleName, id) {
   root.append(salesPanel);
 
   let latestAnalysis = null;
-  async function showAnalysis(analysis, fromCache) {
+  async function showAnalysis(analysis, fromCache, usageStale) {
     latestAnalysis = analysis || latestAnalysis;
     reanalyseButton.hidden = !analysis;
     if (fromCache && analysis?.success) {
       analyseStatus.textContent = `Last analysis ${formatWhen(analysis.analysedAt)}. Nothing was written to Zoho.`;
+    }
+    let stale = usageStale;
+    if (stale === undefined) {
+      try {
+        const usage = await api("/api/usage/status");
+        stale = Boolean(usage.importedAt && analysis?.analysedAt && usage.importedAt > analysis.analysedAt);
+      } catch {
+        stale = false;
+      }
     }
     renderSalesEventPanel(salesPanel, moduleName, id, latestAnalysis, runAnalysis);
     snapshotSection.hidden = Boolean(analysis?.profile);
@@ -321,6 +330,10 @@ function renderRelationship(view, usage, moduleName, id) {
     updateIdentityBadges(badges, view, latestAnalysis);
     if (!analysis) return;
     renderIntelligence(analyseResult, analysis, moduleName, id, view, usage);
+    if (stale) {
+      analyseResult.prepend(el("p", { class: "stale-banner", text: "USAGE DATA UPDATED — ANALYSIS MAY BE STALE" }));
+      analyseStatus.textContent = `${analyseStatus.textContent} USAGE DATA UPDATED — ANALYSIS MAY BE STALE. Re-analyse to include the new usage evidence.`;
+    }
   }
 
   async function runAnalysis(force) {
@@ -349,7 +362,7 @@ function renderRelationship(view, usage, moduleName, id) {
 
   api(`/api/intelligence/profile?module=${encodeURIComponent(moduleName)}&id=${encodeURIComponent(id)}`)
     .then((data) => {
-      if (data.analysed) showAnalysis(data.analysis, true);
+      if (data.analysed) showAnalysis(data.analysis, true, data.usageStale);
     })
     .catch(() => {});
 
@@ -686,6 +699,86 @@ function renderProducts(analysis) {
   return section;
 }
 
+function displayUnknown(value) {
+  if (value === undefined || value === null || value === "") return "UNKNOWN";
+  return String(value);
+}
+
+function activationInterpretation(summary, usage) {
+  const states = (usage?.profiles || []).map((profile) => profile.activationState).filter(Boolean);
+  if (states.length) return states.map((state) => words(state)).join(" · ");
+  if (!summary || summary.label === "USAGE UNKNOWN") return "USAGE UNKNOWN";
+  if (summary.accountingConnectedCount && summary.clientPortalActivityPresent) return "Activation evidence present (AI interpretation is separate)";
+  if (summary.accountingConnectedCount && !summary.clientPortalActivityPresent) return "Accounting connected; client portal activity limited or unknown";
+  return "Matched usage present — see profiles";
+}
+
+function renderPortalGenieUsage(analysis) {
+  const layer = analysis.organisationGraph?.portalGenieUsage;
+  const usage = analysis.organisation?.usage;
+  const section = el("section", { class: "section" }, [el("h2", { text: "Portal Genie usage" })]);
+  section.append(el("span", { class: "pill usage", text: "USAGE" }));
+  section.append(el("p", { class: "muted", text: "Portal visits = visits by the subscriber's clients. Last login is subscriber authentication. This is imported product evidence, not a Zoho CRM fact." }));
+  const summary = layer?.summary || usage?.organisationSummary;
+  const card = el("div", { class: "usage-summary card" });
+  card.append(el("h3", { text: "Organisation summary" }));
+  card.append(el("p", { text: summary?.message || usage?.message || "USAGE UNKNOWN — product usage was not assumed to be zero." }));
+  const grid = el("div", { class: "snapshot" });
+  grid.append(
+    stat("Accounting integration", summary ? (summary.accountingConnectedCount ? `${summary.accountingConnectedCount} connected` : summary.accountingUnknownCount ? "UNKNOWN" : "Not connected") : "UNKNOWN"),
+    stat("Last known login", displayUnknown(summary?.latestLoginAt)),
+    stat("Client portal activity", summary?.clientPortalActivityPresent ? "Present" : summary?.clientPortalActivityUnknown ? "UNKNOWN" : "None recorded"),
+    stat("Portal visit trend", displayUnknown(summary?.portalVisitTrend)),
+    stat("Document upload usage", summary?.documentUploadPresent ? "Present" : summary?.documentUploadZero ? "Zero" : "UNKNOWN"),
+    stat("Activation / adoption", activationInterpretation(summary, usage)),
+    stat("Subscriber profiles", String(summary?.subscriberProfileCount ?? 0)),
+  );
+  card.append(grid);
+  if ((usage?.contradictions || []).length) {
+    const cons = el("div", { class: "callout" });
+    cons.append(el("h4", { text: "CRM vs usage contradictions" }));
+    for (const item of usage.contradictions) cons.append(el("p", { text: `${item.code}: ${item.message}` }));
+    card.append(cons);
+  }
+  section.append(card);
+
+  const profiles = layer
+    ? [...layer.contactProfiles, ...layer.organisationDiscoveredProfiles]
+    : usage?.profiles || [];
+  if (!profiles.length) {
+    section.append(el("p", { class: "muted", text: "USAGE UNKNOWN. No matching Portal Genie subscriber profile." }));
+  } else {
+    const list = el("div", { class: "people-grid" });
+    for (const profile of profiles) {
+      const person = el("div", { class: "person-card" });
+      person.append(el("strong", { text: profile.name || profile.email || profile.clientId || "Subscriber" }));
+      person.append(el("div", { class: "badge-row" }, [
+        el("span", { class: "pill usage", text: "USAGE" }),
+        el("span", { class: "pill", text: profile.layer === "organisation" ? "Organisation discovery" : "Contact-level" }),
+      ]));
+      person.append(kv("Email", displayUnknown(profile.email)));
+      person.append(kv("Client ID", displayUnknown(profile.clientId)));
+      person.append(kv("Accounting software connected", profile.accountingConnected === true ? "YES" : profile.accountingConnected === false ? "NO" : "UNKNOWN"));
+      person.append(kv("Accounting platform", displayUnknown(profile.accountingPlatform || profile.accountingSoftware)));
+      person.append(kv("Last login", displayUnknown(profile.lastLoginAt)));
+      person.append(kv("Portal visits — current month", displayUnknown(profile.portalVisitsCurrentMonth)));
+      person.append(kv("Portal visits — previous month", displayUnknown(profile.portalVisitsPreviousMonth)));
+      person.append(kv("Portal visits — two months ago", displayUnknown(profile.portalVisitsTwoMonthsAgo)));
+      person.append(kv("Portal visit trend", displayUnknown(profile.portalVisitTrend)));
+      person.append(kv("Document upload usage", displayUnknown(profile.documentUploadUsage?.original || profile.documentUploadUsage)));
+      person.append(kv("Match reason", displayUnknown(profile.matchReason || profile.matchMethod)));
+      person.append(kv("Data-quality status", displayUnknown(profile.dataQualityStatus || (profile.dataQuality ? Object.entries(profile.dataQuality).map(([k, v]) => `${k}=${v}`).join(", ") : "UNKNOWN"))));
+      if (profile.matchedContactName) person.append(kv("Matched CRM Contact", profile.matchedContactName));
+      list.append(person);
+    }
+    section.append(list);
+  }
+  for (const contact of layer?.unmatchedContacts || usage?.unmatchedContacts || []) {
+    section.append(el("p", { class: "muted", text: `${contact.name}: No matching usage profile.` }));
+  }
+  return section;
+}
+
 function optionList(values, selected) {
   return values.map((value) => {
     const label = value ? words(value) : "(unknown)";
@@ -955,6 +1048,7 @@ function renderIntelligence(root, analysis, moduleName, id, view, usageOverlay) 
     });
   }
   appendSafe(root, () => renderProducts(analysis));
+  appendSafe(root, () => renderPortalGenieUsage(analysis));
   if (graph) appendSafe(root, () => renderOpportunities(graph));
   if (profile) appendSafe(root, () => renderRecommendationContext(profile, analysis));
   if (profile) appendSafe(root, () => renderOpportunityAssessments(profile));
@@ -969,19 +1063,10 @@ function renderIntelligence(root, analysis, moduleName, id, view, usageOverlay) 
   if (graph) appendSafe(root, () => renderDataQuality(graph));
 
   const usage = analysis.organisation?.usage;
-  const usageBlock = el("details", { class: "panel" }, [el("summary", { text: "Portal Genie usage" })]);
+  const usageBlock = el("details", { class: "panel" }, [el("summary", { text: "Portal Genie usage (imported evidence)" })]);
+  usageBlock.append(el("p", { class: "muted", text: "Raw usage evidence is summarised above. This collapse keeps the import provenance for verification." }));
   usageBlock.append(el("p", { text: usage?.label || "USAGE UNKNOWN" }));
   usageBlock.append(el("p", { class: "muted", text: usage?.message || "Product usage is unknown, not assumed to be zero. This is not Zoho data." }));
-  for (const item of usage?.profiles || []) {
-    usageBlock.append(
-      kv("Match", item.matchMethod || "matched"),
-      kv("Registered", item.registered ? item.registrationDate || "Yes" : "Not evidenced"),
-      kv("Accounting", item.accountingSoftware ? `${item.accountingSoftware} · connected=${item.accountingConnected}` : "Unknown"),
-      kv("Activation", fieldValue(item.activationState)),
-      kv("Last activity", fieldValue(item.lastActivity)),
-      kv("Paying", fieldValue(item.paying)),
-    );
-  }
   root.append(usageBlock);
 
   const enrich = el("details", { class: "panel" }, [el("summary", { text: "Enrichment" })]);
@@ -1202,18 +1287,56 @@ $("usage-form").addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify({ csv: $("usage-csv").value, fileName: $("usage-file").files?.[0]?.name || "paste.csv" }),
     });
-    $("usage-status").textContent = `Imported ${result.rowCount} row(s) from ${result.file}.`;
+    $("usage-status").textContent = `Imported ${result.accepted ?? result.rowCount} accepted row(s), ${result.rejected ?? 0} rejected, from ${result.file}. OpenAI was not run.`;
+    await renderUsageInspect();
   } catch (error) {
     $("usage-status").textContent = operatorMessage(error);
   }
 });
 
+async function renderUsageInspect() {
+  const root = $("usage-import-result");
+  if (!root) return;
+  root.replaceChildren();
+  try {
+    const data = await api("/api/usage/rows");
+    if (!data.imported) {
+      root.append(el("p", { class: "muted", text: "No imported dataset to inspect yet." }));
+      return;
+    }
+    root.append(el("h3", { text: "Imported dataset" }));
+    root.append(el("p", { text: `Imported ${data.importedAt || "unknown time"} · ${data.file || "usage-import.json"}` }));
+    root.append(el("p", { text: `${(data.rows || []).filter((row) => row.accepted).length} accepted · ${(data.rejected || []).length} rejected · ${(data.warnings || []).length} warning(s)` }));
+    if ((data.warnings || []).length) {
+      const list = el("ul");
+      for (const warning of data.warnings.slice(0, 20)) list.append(el("li", { text: warning }));
+      root.append(list);
+    }
+    const table = el("div", { class: "usage-inspect" });
+    for (const row of data.rows || []) {
+      table.append(el("div", { class: "person-card" }, [
+        el("strong", { text: `${row.name || row.email || row.clientId || `Row ${row.rowNumber}`}${row.accepted ? "" : " · rejected"}` }),
+        kv("Email", displayUnknown(row.email)),
+        kv("Client ID", displayUnknown(row.clientId)),
+        kv("Accounting connected", displayUnknown(row.accountingConnected)),
+        kv("Last login", displayUnknown(row.lastLoginAt)),
+        kv("Portal visits (current / previous / two months ago)", `${displayUnknown(row.portalVisitsCurrentMonth)} / ${displayUnknown(row.portalVisitsPreviousMonth)} / ${displayUnknown(row.portalVisitsTwoMonthsAgo)}`),
+        kv("Document uploads", displayUnknown(row.documentUploadUsage)),
+      ]));
+    }
+    root.append(table);
+  } catch (error) {
+    root.append(el("p", { class: "warn-text", text: operatorMessage(error) }));
+  }
+}
+
 async function loadUsageStatus() {
   try {
     const status = await api("/api/usage/status");
     $("usage-status").textContent = status.imported
-      ? `Last import: ${status.rowCount} row(s) from ${status.file || "usage-import.json"}`
+      ? `Last import ${status.importedAt || ""}: ${status.accepted ?? status.rowCount} accepted row(s) from ${status.file || "usage-import.json"}`
       : "No usage file imported yet.";
+    if (status.imported) await renderUsageInspect();
   } catch (error) {
     $("usage-status").textContent = operatorMessage(error);
   }

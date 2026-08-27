@@ -2,6 +2,7 @@ import type { ConfidenceLevel, OrgAssociationReason } from "./commercial-intelli
 import type { NormalizedEmail } from "./normalized-email.js";
 import type { ProductId } from "./product-relationship.js";
 import type { SalesEvent } from "./sales-event.js";
+import type { OrganisationUsageLayer } from "./portal-genie-usage.js";
 
 export const CONTACT_ROLES = [
   "SELECTED_CONTACT",
@@ -146,4 +147,5 @@ export type OrganisationGraph = {
   organisationId?: string;
   salesEvents: SalesEvent[];
   zohoRecordsMerged: false;
+  portalGenieUsage?: OrganisationUsageLayer;
 };

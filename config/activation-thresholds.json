@@ -6,5 +6,9 @@
   "activeMinVisitsLast30Days": 4,
   "highlyActiveMinVisitsLast30Days": 12,
   "activatedRequiresAccountingConnection": true,
-  "activatedMinMeaningfulActions": 1
+  "activatedMinMeaningfulActions": 1,
+  "recentLoginDays": 14,
+  "staleLoginDays": 30,
+  "portalVisitTrendMinDelta": 2,
+  "crmQuietAfterDays": 45
 }

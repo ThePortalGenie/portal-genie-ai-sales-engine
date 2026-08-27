@@ -14,8 +14,9 @@ import { OpenAiReasonerError } from "./openai-reasoner.js";
 import { ProfileValidationError } from "./profile-schema.js";
 import { PROFILE_SCHEMA_VERSION } from "../domain/commercial-intelligence.js";
 import { organisationKey } from "../domain/sales-event.js";
-import type { StoredAnalysis } from "./analysis-store.js";
-import { loadImportedUsageProfiles, matchUsageForOrganisation } from "./usage-match.js";
+import type { NormalizedUsageProfile } from "../domain/normalized-usage.js";
+import { loadImportedUsageProfiles, loadUsageImportMeta, matchUsageForOrganisation } from "./usage-match.js";
+import { usageTimelineEvents, type CrmUsageContext } from "./usage-signals.js";
 import { reconstructFromSources } from "./interaction-extraction.js";
 import { buildProductRelationships, detectProductContradictions } from "./product-relationships.js";
 import { createRequestCachedClient } from "./request-cache.js";
@@ -30,6 +31,7 @@ import {
 } from "./org-graph.js";
 import { listSalesEvents } from "./sales-event-store.js";
 import { buildSalesEventEvidence, salesEventsToTimeline } from "./sales-event-digest.js";
+import type { StoredAnalysis } from "./analysis-store.js";
 
 export type AnalyseInput = {
   module: string;
@@ -38,6 +40,8 @@ export type AnalyseInput = {
   client: ZohoCrmReader;
   reasoner: CommercialReasoner;
   model: string;
+  usageProfiles?: NormalizedUsageProfile[];
+  usageImportedAt?: string;
   publicDomains?: Set<string>;
 };
 
@@ -160,7 +164,29 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
   graph = { ...graph, organisationId, salesEvents };
 
   const members = membersFromGraph(graph, resolution.members);
-  const usage = matchUsageForOrganisation(members, loadImportedUsageProfiles());
+  const usageMeta = loadUsageImportMeta();
+  const crmUsage: CrmUsageContext = {
+    inboundEmails: graph.emails.filter((email) => email.direction === "inbound").length || contact.emails.inboundCount,
+    outboundEmails: graph.emails.filter((email) => email.direction === "outbound").length || contact.emails.outboundCount,
+    lastInboundAt:
+      graph.emails
+        .filter((email) => email.direction === "inbound" && email.at)
+        .map((email) => email.at as string)
+        .sort()
+        .at(-1) ?? contact.emails.lastAt,
+    lastActivityAt: contact.identity.createdAt,
+    calls: contact.calls,
+    meetings: contact.meetings,
+    notesOrEmailsSuggestProductUse: communicationSuggestsProductUse(graph, contact),
+  };
+  const usage = matchUsageForOrganisation(members, input.usageProfiles ?? loadImportedUsageProfiles(), {
+    orgDomains: graph.domains,
+    orgPortalGenieId: resolution.identity.portalGenieOrgId,
+    publicDomains,
+    crm: crmUsage,
+    importedAt: input.usageImportedAt ?? usageMeta.importedAt,
+  });
+  graph = { ...graph, portalGenieUsage: usage.layer };
   const timeline = buildTimeline(input.diagnostic).map((event) => ({
     at: event.at,
     title: event.title,
@@ -244,6 +270,16 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
     ...salesEventsToTimeline(salesEvents).filter(
       (event) => !reconstruction.timeline.some((item) => item.interactionId === event.interactionId),
     ),
+    ...usageTimelineEvents([
+      ...(usage.layer?.contactProfiles ?? []),
+      ...(usage.layer?.organisationDiscoveredProfiles ?? []),
+    ]).map((event) => ({
+      at: event.at,
+      approximate: false,
+      kind: "usage" as const,
+      title: event.title,
+      source: event.source,
+    })),
   ].sort((left, right) => (left.at ? Date.parse(left.at) : 0) - (right.at ? Date.parse(right.at) : 0));
 
   const evidence: EvidenceItem[] = [
@@ -346,4 +382,16 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
       omittedDueToBudget: context.omitted_due_to_budget,
     };
   }
+}
+
+function communicationSuggestsProductUse(
+  graph: OrganisationGraph,
+  contact: ReturnType<typeof buildContactIntelligence>,
+): boolean {
+  const blobs = [
+    ...graph.notes.map((note) => `${note.title ?? ""} ${note.content ?? ""}`),
+    ...graph.emails.map((email) => `${email.subject ?? ""} ${email.currentMessageText ?? email.bodyText ?? ""}`),
+    ...contact.notes.map((note) => `${note.title ?? ""} ${note.content ?? ""}`),
+  ].join("\n");
+  return /\b(logged in|log in|using portal genie|set(?:ting)? up|activated|went live|portal visit)/i.test(blobs);
 }

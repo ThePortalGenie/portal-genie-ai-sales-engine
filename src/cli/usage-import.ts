@@ -30,12 +30,15 @@ async function main(): Promise<void> {
   );
   const crmRecords = args.matchCrm ? loadCrmIdentities(resolve(process.cwd(), args.matchCrm)) : [];
   const now = new Date();
-  const accounts = imported.profiles.map((profile) =>
+  const accepted = imported.accepted;
+  const accounts = accepted.map((profile) =>
     combineAccountIntelligence({ usage: profile, crmRecords, now, thresholds }),
   );
 
   const counts = {
     rows: imported.rowCount,
+    accepted: imported.acceptedCount,
+    rejected: imported.rejectedCount,
     matched: accounts.filter((item) => item.crmIntelligence.match.status === "matched").length,
     needsReview: accounts.filter((item) => item.crmIntelligence.match.status === "needs_review").length,
     unmatched: accounts.filter((item) => item.crmIntelligence.match.status === "unmatched").length,
@@ -52,6 +55,8 @@ async function main(): Promise<void> {
     thresholds: { ...thresholds },
     mappedHeaders: imported.mappedHeaders,
     unmappedHeaders: imported.unmappedHeaders,
+    warnings: imported.warnings,
+    openaiTriggered: false,
     counts,
     accounts,
   };

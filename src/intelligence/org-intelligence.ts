@@ -4,8 +4,9 @@ import type { NormalizedUsageProfile } from "../domain/normalized-usage.js";
 import { deriveLeadingIndicators } from "../domain/leading-indicators.js";
 import type { DealSignals } from "./contact-intelligence.js";
 import { extractDealSignals } from "./contact-intelligence.js";
-import type { OrganisationResolution, OrgMember } from "./org-resolution.js";
+import type { OrganisationUsageLayer, SubscriberUsageView } from "../domain/portal-genie-usage.js";
 import type { JsonObject } from "../integrations/zoho/types.js";
+import type { OrganisationResolution, OrgMember } from "./org-resolution.js";
 
 export type OrganisationEvidenceProfile = {
   identity: OrganisationResolution["identity"];
@@ -28,12 +29,24 @@ export type UsageMatchSummary = {
   label: "USAGE MATCHED" | "USAGE UNKNOWN";
   message: string;
   profiles: Array<{
+    layer?: "contact" | "organisation";
     company?: string;
+    name?: string;
+    firstName?: string;
+    surname?: string;
     email?: string;
+    clientId?: string;
     registered?: boolean;
     registrationDate?: string;
     accountingSoftware?: string;
-    accountingConnected?: boolean;
+    accountingPlatform?: string;
+    accountingConnected?: boolean | "unknown";
+    lastLoginAt?: string;
+    portalVisitsCurrentMonth?: number;
+    portalVisitsPreviousMonth?: number;
+    portalVisitsTwoMonthsAgo?: number;
+    portalVisitTrend?: string;
+    documentUploadUsage?: string;
     portalVisitsLast30Days?: number;
     paymentsProcessed?: number;
     documentsViewed?: number;
@@ -44,28 +57,50 @@ export type UsageMatchSummary = {
     partnerStatus?: boolean | string;
     activationState?: string | null;
     matchMethod?: string;
+    matchReason?: string;
+    matchedContactId?: string;
+    matchedContactName?: string;
+    dataQualityStatus?: string;
   }>;
+  unmatchedContacts?: OrganisationUsageLayer["unmatchedContacts"];
+  organisationSummary?: OrganisationUsageLayer["summary"];
+  signals?: OrganisationUsageLayer["signals"];
+  contradictions?: OrganisationUsageLayer["contradictions"];
+  importedAt?: string;
+  layer?: OrganisationUsageLayer;
   evidence: EvidenceItem[];
 };
 
-export function usageUnknown(message: string): UsageMatchSummary {
+export function usageUnknown(message: string, layer?: OrganisationUsageLayer): UsageMatchSummary {
   return {
     status: "unavailable",
     label: "USAGE UNKNOWN",
     message,
     profiles: [],
+    unmatchedContacts: layer?.unmatchedContacts,
+    organisationSummary: layer?.summary,
+    signals: layer?.signals,
+    contradictions: layer?.contradictions,
+    importedAt: layer?.importedAt,
+    layer,
     evidence: [
       evidence({
         type: "unknown",
         claim: "USAGE UNKNOWN — product usage was not assumed to be zero",
-        source: "Portal Genie usage import",
+        source: "USAGE",
       }),
     ],
   };
 }
 
 export function usageFromProfiles(
-  matches: Array<{ profile: NormalizedUsageProfile; method?: string; status: "matched" | "needs_review" }>,
+  matches: Array<{
+    profile: NormalizedUsageProfile;
+    method?: string;
+    status: "matched" | "needs_review";
+    view?: SubscriberUsageView;
+  }>,
+  layer?: OrganisationUsageLayer,
 ): UsageMatchSummary {
   if (matches.length === 0) {
     return usageUnknown("No deterministic usage match for this organisation.");
@@ -74,32 +109,41 @@ export function usageFromProfiles(
   const review = matches.filter((item) => item.status === "needs_review");
   const status = confirmed.length > 0 ? "matched" : "needs_review";
   const evidenceItems: EvidenceItem[] = [];
-  const profiles = matches.map(({ profile, method, status: matchStatus }) => {
+  const profiles = matches.map(({ profile, method, status: matchStatus, view }) => {
     const indicators = deriveLeadingIndicators(profile);
     if (matchStatus === "matched") {
       evidenceItems.push(
         evidence({
           type: "usage_fact",
-          claim: `Portal Genie usage matched via ${method ?? "identity"} for ${profile.identity.company ?? profile.identity.primaryEmail ?? "account"}`,
-          source: "Imported Portal Genie usage (not Zoho)",
+          claim: `Portal Genie usage matched via ${view?.matchReason ?? method ?? "identity"} for ${view?.name ?? profile.identity.company ?? profile.identity.primaryEmail ?? "account"}`,
+          source: "USAGE",
           recordId: profile.identity.portalGenieAccountId,
         }),
       );
-      if (profile.registrationDate) {
+      if (profile.lastLoginAt) {
         evidenceItems.push(
           evidence({
             type: "usage_fact",
-            claim: `Registered ${profile.registrationDate}`,
-            source: "Imported Portal Genie usage",
+            claim: `Subscriber last login ${profile.lastLoginAt}`,
+            source: "USAGE",
           }),
         );
       }
-      if (profile.accountingSoftware) {
+      if (profile.portalVisitsCurrentMonth !== undefined) {
         evidenceItems.push(
           evidence({
             type: "usage_fact",
-            claim: `Accounting software ${profile.accountingConnected ? "connected" : "not connected"}: ${profile.accountingSoftware}`,
-            source: "Imported Portal Genie usage",
+            claim: `Client portal visits this month = ${profile.portalVisitsCurrentMonth} (visits by the subscriber's clients, not subscriber logins)`,
+            source: "USAGE",
+          }),
+        );
+      }
+      if (profile.accountingSoftware || profile.accountingConnected !== undefined) {
+        evidenceItems.push(
+          evidence({
+            type: "usage_fact",
+            claim: `Accounting software ${profile.accountingConnected === true ? "connected" : profile.accountingConnected === false ? "not connected" : "unknown"}: ${profile.accountingPlatform ?? profile.accountingSoftware ?? "UNKNOWN"}`,
+            source: "USAGE",
           }),
         );
       }
@@ -108,7 +152,7 @@ export function usageFromProfiles(
           evidence({
             type: "usage_fact",
             claim: `Paying status = ${profile.payingStatus === true ? "paying" : profile.payingStatusRaw}`,
-            source: "Imported Portal Genie usage",
+            source: "USAGE",
           }),
         );
       }
@@ -116,41 +160,80 @@ export function usageFromProfiles(
       evidenceItems.push(
         evidence({
           type: "unknown",
-          claim: "Possible Portal Genie usage match flagged for review; not treated as a usage fact",
-          source: "Identity matching",
+          claim: view?.matchMethod === "business_domain"
+            ? "Portal Genie usage exists within this organisation by business domain. Personal usage was not assigned to another Contact."
+            : "Possible Portal Genie usage match flagged for review; not treated as a personal usage fact",
+          source: "USAGE",
         }),
       );
     }
     return {
+      layer: view?.layer,
       company: profile.identity.company,
+      name: view?.name,
+      firstName: profile.identity.firstName,
+      surname: profile.identity.surname,
       email: profile.identity.primaryEmail,
+      clientId: profile.identity.portalGenieAccountId,
       registered: Boolean(profile.registrationDate || profile.identity.portalGenieAccountId),
       registrationDate: profile.registrationDate,
       accountingSoftware: profile.accountingSoftware,
-      accountingConnected: profile.accountingConnected,
-      portalVisitsLast30Days: profile.visitsLast30Days,
+      accountingPlatform: view?.accountingPlatform ?? profile.accountingPlatform,
+      accountingConnected: view?.accountingConnected ?? profile.accountingConnected,
+      lastLoginAt: profile.lastLoginAt,
+      portalVisitsCurrentMonth: profile.portalVisitsCurrentMonth,
+      portalVisitsPreviousMonth: profile.portalVisitsPreviousMonth,
+      portalVisitsTwoMonthsAgo: profile.portalVisitsTwoMonthsAgo,
+      portalVisitTrend: view?.portalVisitTrend,
+      documentUploadUsage: profile.documentUploadUsage?.original,
+      portalVisitsLast30Days: profile.visitsLast30Days ?? profile.portalVisitsCurrentMonth,
       paymentsProcessed: profile.paymentsProcessed,
       documentsViewed: profile.documentsViewed,
       emailsSent: profile.emailsSent,
-      lastActivity: profile.lastMeaningfulActivityAt ?? profile.lastVisitAt,
-      activityTrend: indicators.usageMomentum.value ?? undefined,
+      lastActivity: profile.lastLoginAt ?? profile.lastMeaningfulActivityAt ?? profile.lastVisitAt,
+      activityTrend: view?.portalVisitTrend ?? indicators.usageMomentum.value ?? undefined,
       paying: profile.payingStatus ?? profile.payingStatusRaw,
       partnerStatus: profile.partnerStatus ?? profile.partnerStatusRaw,
       activationState: indicators.activationState.value,
-      matchMethod: method,
+      matchMethod: view?.matchMethod ?? method,
+      matchReason: view?.matchReason,
+      matchedContactId: view?.matchedContactId,
+      matchedContactName: view?.matchedContactName,
+      dataQualityStatus: view
+        ? Object.entries(view.dataQuality)
+            .map(([field, presence]) => `${field}=${presence}`)
+            .join(", ")
+        : undefined,
     };
   });
 
+  for (const contradiction of layer?.contradictions ?? []) {
+    evidenceItems.push(
+      evidence({
+        type: "derived_signal",
+        claim: `${contradiction.code}: ${contradiction.message}`,
+        source: "USAGE",
+      }),
+    );
+  }
+
   return {
     status,
-    label: confirmed.length > 0 ? "USAGE MATCHED" : "USAGE UNKNOWN",
+    label: layer?.summary.label ?? (confirmed.length > 0 ? "USAGE MATCHED" : "USAGE UNKNOWN"),
     message:
-      confirmed.length > 0
+      layer?.summary.message ??
+      (confirmed.length > 0
         ? `${confirmed.length} deterministic Portal Genie usage match(es). Product evidence is separate from CRM evidence.`
         : review.length > 0
           ? "Possible usage matches need review. Usage is unknown until confirmed."
-          : "USAGE UNKNOWN",
+          : "USAGE UNKNOWN"),
     profiles,
+    unmatchedContacts: layer?.unmatchedContacts,
+    organisationSummary: layer?.summary,
+    signals: layer?.signals,
+    contradictions: layer?.contradictions,
+    importedAt: layer?.importedAt,
+    layer,
     evidence: evidenceItems,
   };
 }

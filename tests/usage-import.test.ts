@@ -133,9 +133,11 @@ test("sales intelligence combines CRM and usage without treating unknown CRM int
 test("usage-template.csv imports through the file adapter", async () => {
   const imported = await importUsageFile("data/usage-template.csv");
   assert.equal(imported.rowCount, 2);
-  assert.ok(imported.mappedHeaders.includes("Company"));
+  assert.ok(imported.mappedHeaders.includes("Email Address") || imported.mappedHeaders.includes("Client ID"));
   assert.equal(imported.profiles[0]?.identity.portalGenieAccountId, "PG-1001");
   assert.equal(imported.profiles[1]?.accountingConnected, false);
+  assert.equal(imported.profiles[0]?.portalVisitsCurrentMonth, 17);
+  assert.equal(imported.profiles[0]?.lastLoginAt, "2026-08-20");
 });
 
 test("xlsx adapter produces the same normalised identity as CSV", async () => {

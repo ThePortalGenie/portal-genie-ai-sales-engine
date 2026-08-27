@@ -139,6 +139,19 @@ function usageProfile(partial: Partial<NormalizedUsageProfile> & { email?: strin
     },
     missingFields: [],
     extras: {},
+    fieldQuality: {
+      clientId: "unknown",
+      email: partial.email ? "present" : "unknown",
+      accountingConnected: "unknown",
+      accountingPlatform: "unknown",
+      lastLoginAt: "unknown",
+      portalVisitsCurrentMonth: "unknown",
+      portalVisitsPreviousMonth: "unknown",
+      portalVisitsTwoMonthsAgo: "unknown",
+      documentUploadUsage: "unknown",
+    },
+    warnings: [],
+    accepted: true,
     ...partial,
   };
 }

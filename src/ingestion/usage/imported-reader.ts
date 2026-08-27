@@ -1,7 +1,7 @@
 import type { AccountingPlatform, UsageAggregates } from "../../domain/usage.js";
 import type { NormalizedUsageProfile } from "../../domain/normalized-usage.js";
 import type { PortalGenieUsageReader } from "../../integrations/portal-genie/reader.js";
-import { domainFromEmail, normalizeEmail } from "../../domain/normalize-identity.js";
+import { normalizeEmail } from "../../domain/normalize-identity.js";
 
 export function profileToUsageAggregates(profile: NormalizedUsageProfile): UsageAggregates {
   return {
@@ -75,11 +75,6 @@ export class ImportedUsageReader implements PortalGenieUsageReader {
       const email = normalizeEmail(identity.email);
       const hit = this.profiles.find((profile) => profile.identity.primaryEmail === email);
       if (hit) return hit;
-      const domain = domainFromEmail(email);
-      if (domain) {
-        const domainHits = this.profiles.filter((profile) => profile.identity.domain === domain);
-        if (domainHits.length === 1) return domainHits[0];
-      }
     }
     return undefined;
   }

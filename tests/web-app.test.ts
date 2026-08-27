@@ -73,8 +73,9 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /Commercial story/);
     assert.match(js, /CRM structure review/);
     assert.match(js, /Product relationships/);
-    assert.match(js, /Save event/);
-    assert.match(js, /Custom Fields/);
+    assert.match(js, /Portal visits = visits by the subscriber's clients/);
+    assert.match(js, /USAGE DATA UPDATED — ANALYSIS MAY BE STALE/);
+    assert.match(js, /Portal Genie usage/);
   });
 });
 

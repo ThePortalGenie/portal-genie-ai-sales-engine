@@ -94,10 +94,34 @@ export type CommercialEvidenceDigest = {
     confirmed_crm_activity: string;
   };
   usage_state: {
+    product: "PORTAL_GENIE";
     status: string;
     label: string;
     message: string;
-    profiles: OrganisationEvidenceProfile["usage"]["profiles"];
+    imported_at?: string;
+    organisation_summary?: OrganisationEvidenceProfile["usage"]["organisationSummary"];
+    signals?: Array<{ code: string; message: string }>;
+    contradictions?: Array<{ code: string; message: string }>;
+    unmatched_contacts?: OrganisationEvidenceProfile["usage"]["unmatchedContacts"];
+    profiles: Array<{
+      layer?: string;
+      name?: string;
+      email?: string;
+      client_id?: string;
+      accounting_connected?: boolean | "unknown";
+      accounting_platform?: string;
+      last_login?: string;
+      portal_visits_current?: number;
+      portal_visits_previous?: number;
+      portal_visits_two_months_ago?: number;
+      portal_visit_trend?: string;
+      document_upload_usage?: string;
+      match_reason?: string;
+      matched_contact?: string;
+      data_quality?: string;
+    }>;
+    evidence_ids?: string[];
+    portal_visits_note: "Portal visits = visits by the subscriber's clients, not subscriber logins.";
   };
   email_metrics: {
     outbound: number;
@@ -294,6 +318,41 @@ function preferredCurrentMessage(email: {
   return clip(current || email.bodyText || "", 420);
 }
 
+function compactUsageState(
+  usage: OrganisationEvidenceProfile["usage"],
+): CommercialEvidenceDigest["usage_state"] {
+  return {
+    product: "PORTAL_GENIE",
+    status: usage.status,
+    label: usage.label,
+    message: usage.message,
+    imported_at: usage.importedAt,
+    organisation_summary: usage.organisationSummary,
+    signals: (usage.signals ?? []).map((item) => ({ code: item.code, message: item.message })),
+    contradictions: (usage.contradictions ?? []).map((item) => ({ code: item.code, message: item.message })),
+    unmatched_contacts: usage.unmatchedContacts,
+    profiles: usage.profiles.map((profile) => ({
+      layer: profile.layer,
+      name: profile.name,
+      email: profile.email,
+      client_id: profile.clientId,
+      accounting_connected: profile.accountingConnected,
+      accounting_platform: profile.accountingPlatform ?? profile.accountingSoftware,
+      last_login: profile.lastLoginAt,
+      portal_visits_current: profile.portalVisitsCurrentMonth,
+      portal_visits_previous: profile.portalVisitsPreviousMonth,
+      portal_visits_two_months_ago: profile.portalVisitsTwoMonthsAgo,
+      portal_visit_trend: profile.portalVisitTrend,
+      document_upload_usage: profile.documentUploadUsage,
+      match_reason: profile.matchReason ?? profile.matchMethod,
+      matched_contact: profile.matchedContactName,
+      data_quality: profile.dataQualityStatus,
+    })),
+    evidence_ids: usage.evidence.map((item) => item.id).slice(0, 12),
+    portal_visits_note: "Portal visits = visits by the subscriber's clients, not subscriber logins.",
+  };
+}
+
 function compactTimeline(
   events: ReconstructedTimelineEvent[],
   unanswered?: string,
@@ -397,13 +456,17 @@ export function buildCommercialEvidenceDigest(options: {
   const signals = options.reconstruction.interactions.flatMap((item) =>
     item.commercial_signals.map((signal) => `${signal.layer}:${signal.type}:${clip(signal.text, 80)}`),
   );
-  const uniqueSignals = [...new Set(signals)].slice(0, 12);
+  const uniqueSignals = [...new Set([
+    ...signals,
+    ...(options.organisation.usage.signals ?? []).map((item) => `usage:${item.code}`),
+    ...(options.organisation.usage.contradictions ?? []).map((item) => `usage_contradiction:${item.code}`),
+  ])].slice(0, 16);
   const commitments = uniqueSignals.filter((item) => /follow_up|next_step|objection|management|pricing|partner|referral/.test(item));
   const cited = new Set(
     [
       ...options.reconstruction.interactions.flatMap((item) => item.source_evidence_ids),
       ...options.organisationRelationship.evidence_ids,
-      ...options.products.flatMap((item) => item.evidence_ids),
+      ...options.organisation.usage.evidence.map((item) => item.id),
     ].filter(Boolean),
   );
   const evidenceRefs = options.evidence
@@ -497,12 +560,7 @@ export function buildCommercialEvidenceDigest(options: {
       lead_source: options.contact.identity.source,
       confirmed_crm_activity: options.reconstruction.confirmedCrmActivity,
     },
-    usage_state: {
-      status: options.organisation.usage.status,
-      label: options.organisation.usage.label,
-      message: options.organisation.usage.message,
-      profiles: options.organisation.usage.profiles,
-    },
+    usage_state: compactUsageState(options.organisation.usage),
     email_metrics: {
       outbound: orgMetrics?.outbound ?? options.contact.emails.outboundCount,
       inbound: orgMetrics?.inbound ?? options.contact.emails.inboundCount,
@@ -649,10 +707,8 @@ function applyBudget(digest: CommercialEvidenceDigest, maxChars: number): Commer
       omitted.push(`${section.label} (${dropped} omitted)`);
     } else if (section.key === "usage_state") {
       current.usage_state = {
-        status: current.usage_state.status,
-        label: current.usage_state.label,
-        message: current.usage_state.message,
-        profiles: [],
+        ...current.usage_state,
+        profiles: current.usage_state.profiles.slice(0, 2),
       };
       omitted.push(section.label);
     }
