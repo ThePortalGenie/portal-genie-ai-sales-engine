@@ -3,64 +3,155 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Portal Genie Sales Engine</title>
+    <title>The Portal Genie — Sales Engine</title>
     <link rel="stylesheet" href="/assets/app.css" />
   </head>
   <body>
-    <header class="top">
-      <div>
-        <strong>Sales Engine</strong>
-        <span class="muted">Read-only Zoho CRM</span>
-      </div>
-      <nav>
-        <a href="#explorer">CRM Explorer</a>
-        <a href="#usage">Usage Data</a>
-        <a href="#settings">Settings</a>
-      </nav>
-      <span id="zoho-pill" class="pill">Zoho: checking</span>
-    </header>
-
-    <main>
-      <section id="page-explorer" class="page">
-        <h1>CRM Explorer</h1>
-        <p class="lede">Search Zoho Contacts, Leads, and Accounts. Results are not merged automatically.</p>
-        <form id="search-form" class="row">
-          <input id="search-q" type="search" placeholder="Email, name, company, or Zoho ID" autocomplete="off" />
-          <button type="submit">Search</button>
-        </form>
-        <p id="search-status" class="muted"></p>
-        <div id="search-results"></div>
-        <div id="relationship"></div>
-      </section>
-
-      <section id="page-usage" class="page hidden">
-        <h1>Usage Data</h1>
-        <p class="lede">Portal Genie usage is imported from CSV. There is no live product database connection.</p>
-        <p id="usage-status" class="muted"></p>
-        <form id="usage-form">
-          <label>Upload CSV<textarea id="usage-csv" rows="8" placeholder="Paste CSV or use the file picker"></textarea></label>
-          <input id="usage-file" type="file" accept=".csv,text/csv" />
-          <button type="submit">Import CSV</button>
-        </form>
-      </section>
-
-      <section id="page-settings" class="page hidden">
-        <h1>Settings → Zoho CRM</h1>
-        <p class="lede">Credentials and tokens stay on the server. This UI never displays secrets.</p>
-        <div id="connection-card" class="card"></div>
-        <form id="connect-form" class="card">
-          <h2>Connect Zoho</h2>
-          <p class="muted">Paste a Self Client grant token. It is exchanged server-side and is not stored in the page.</p>
-          <label>Grant token<input id="grant-code" type="password" autocomplete="off" /></label>
-          <div class="row">
-            <button type="submit">Connect Zoho</button>
-            <button type="button" id="test-connection">Test Connection</button>
-            <a class="button" href="/api/zoho/oauth/start">Start OAuth redirect</a>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="32" height="32">
+              <circle cx="16" cy="16" r="11" fill="none" stroke="#22D3EE" stroke-width="1.4" opacity="0.85" />
+              <circle cx="16" cy="16" r="4" fill="#3B82F6" />
+              <ellipse cx="16" cy="16" rx="14" ry="5.5" fill="none" stroke="#8B5CF6" stroke-width="1.1" opacity="0.7" transform="rotate(-18 16 16)" />
+            </svg>
           </div>
-          <p id="connect-status" class="muted"></p>
-        </form>
-      </section>
-    </main>
+          <div class="brand-copy">
+            <p class="brand-kicker">The Portal Genie</p>
+            <p class="brand-name">Sales Engine</p>
+            <p class="brand-sub">Commercial Intelligence</p>
+          </div>
+        </div>
+
+        <nav class="side-nav" aria-label="Primary">
+          <a href="#overview" data-nav="overview">
+            <span class="nav-ico" aria-hidden="true">▣</span> Overview
+          </a>
+          <a href="#explorer" data-nav="explorer">
+            <span class="nav-ico" aria-hidden="true">⌕</span> CRM Explorer
+          </a>
+          <a href="#usage" data-nav="usage">
+            <span class="nav-ico" aria-hidden="true">▤</span> Usage Intelligence
+          </a>
+          <a href="#pipeline" data-nav="pipeline">
+            <span class="nav-ico" aria-hidden="true">◎</span> Pipeline Intelligence
+          </a>
+          <a href="#settings" data-nav="settings">
+            <span class="nav-ico" aria-hidden="true">⚙</span> Settings
+          </a>
+        </nav>
+
+        <div class="sidebar-status" aria-live="polite">
+          <div class="status-row">
+            <span class="status-label">Zoho</span>
+            <span id="zoho-status" class="status-value">Checking</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">OpenAI</span>
+            <span id="openai-status" class="status-value">Checking</span>
+          </div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <button type="button" class="nav-toggle" id="nav-toggle" aria-controls="sidebar" aria-expanded="false">Menu</button>
+          <div class="context">
+            <p class="context-kicker" id="context-kicker">Mission control</p>
+            <h1 class="context-title" id="context-title">Overview</h1>
+          </div>
+          <span id="zoho-pill" class="pill">Zoho: checking</span>
+        </header>
+
+        <main id="main">
+          <section id="page-overview" class="page hidden">
+            <p class="lede">A commercial workspace for one operator. Search a relationship, read the organisation story, then record what happened in the real world.</p>
+            <div class="overview-grid">
+              <a class="launch-card" href="#explorer">
+                <h2>CRM Explorer</h2>
+                <p>Search a person, organisation, email or Zoho record. Open commercial intelligence without leaving the workspace.</p>
+              </a>
+              <a class="launch-card" href="#usage">
+                <h2>Usage Intelligence</h2>
+                <p>Import Portal Genie usage from CSV. Product behaviour stays separate from CRM facts.</p>
+              </a>
+              <a class="launch-card muted-card" href="#pipeline">
+                <h2>Pipeline Intelligence</h2>
+                <p>Not built yet. Ranking and queue work will come after this workspace is proven.</p>
+                <span class="pill">Coming later</span>
+              </a>
+              <a class="launch-card" href="#settings">
+                <h2>Settings</h2>
+                <p>Connect read-only Zoho CRM. Credentials stay on the server.</p>
+              </a>
+            </div>
+          </section>
+
+          <section id="page-explorer" class="page hidden">
+            <div id="explorer-home">
+              <h2 class="page-heading">CRM Explorer</h2>
+              <p class="lede">Search a person, organisation, email address or Zoho record.</p>
+              <p id="explorer-status" class="status-note">Checking connection…</p>
+              <form id="search-form" class="search-hero">
+                <label class="sr-only" for="search-q">Search CRM</label>
+                <div class="search-control">
+                  <input id="search-q" type="search" placeholder="Name, email, organisation, or Zoho ID" autocomplete="off" />
+                  <button type="submit">Search</button>
+                </div>
+              </form>
+              <p id="search-status" class="muted"></p>
+              <div id="search-results" class="result-grid"></div>
+            </div>
+            <div id="relationship"></div>
+          </section>
+
+          <section id="page-usage" class="page hidden">
+            <h2 class="page-heading">Usage Intelligence</h2>
+            <p class="lede">Portal Genie usage is imported from CSV or XLSX. There is no live product database in this milestone.</p>
+            <div class="card callout">
+              <h3>How to read usage later</h3>
+              <p><strong>Last login date</strong> is subscriber authentication/activity — when the Portal Genie user last signed in.</p>
+              <p><strong>Portal visits</strong> count how many of that subscriber’s clients visited their portal, not how often the subscriber logged in.</p>
+              <p class="muted">Do not treat those two metrics as the same thing. Current import still uses the existing CSV fields only.</p>
+            </div>
+            <p id="usage-status" class="status-note"></p>
+            <form id="usage-form" class="card">
+              <h3>Import usage file</h3>
+              <label>Paste CSV<textarea id="usage-csv" rows="8" placeholder="Paste CSV or use the file picker"></textarea></label>
+              <input id="usage-file" type="file" accept=".csv,text/csv" />
+              <button type="submit">Import CSV</button>
+            </form>
+          </section>
+
+          <section id="page-pipeline" class="page hidden">
+            <h2 class="page-heading">Pipeline Intelligence</h2>
+            <div class="card callout">
+              <span class="pill">Not built yet</span>
+              <p>This section is a placeholder. The Sales Engine does not rank a pipeline, write to Zoho, or automate outreach from this screen.</p>
+            </div>
+          </section>
+
+          <section id="page-settings" class="page hidden">
+            <h2 class="page-heading">Settings</h2>
+            <p class="lede">Credentials and tokens stay on the server. This UI never displays secrets.</p>
+            <div id="connection-card" class="card"></div>
+            <form id="connect-form" class="card">
+              <h3>Connect Zoho</h3>
+              <p class="muted">Paste a Self Client grant token. It is exchanged server-side and is not stored in the page.</p>
+              <label>Grant token<input id="grant-code" type="password" autocomplete="off" /></label>
+              <div class="row">
+                <button type="submit">Connect Zoho</button>
+                <button type="button" class="secondary" id="test-connection">Test connection</button>
+                <a class="button secondary" href="/api/zoho/oauth/start">Start OAuth redirect</a>
+              </div>
+              <p id="connect-status" class="muted"></p>
+            </form>
+          </section>
+        </main>
+      </div>
+    </div>
     <script src="/assets/app.js"></script>
   </body>
 </html>

@@ -25,6 +25,9 @@ test("GET / serves the CRM Explorer HTML without secrets", async () => {
     assert.equal(response.status, 200);
     assert.match(html, /CRM Explorer/);
     assert.match(html, /Settings/);
+    assert.match(html, /Usage Intelligence/);
+    assert.match(html, /Pipeline Intelligence/);
+    assert.match(html, /The Portal Genie/);
     assert.doesNotMatch(html, /ZOHO_CLIENT_SECRET|refresh_token|access_token/i);
   });
 });
@@ -56,9 +59,33 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /POSSIBLY RELATED ACCOUNT RECORDS/);
     assert.match(js, /Related contacts/);
     assert.match(js, /organisationGraph/);
-    assert.match(js, /Record sales event/);
+    assert.match(js, /Record real-world event/);
     assert.match(js, /Save \+ re-analyse/);
     assert.match(js, /OPERATOR EVENT/);
+    assert.match(js, /Why this action/);
+    assert.match(js, /Organisation snapshot/);
+    assert.match(js, /Related accounts/);
+    assert.match(js, /Confirmed CRM activity/);
+    assert.match(js, /Inferred real-world activity/);
+    assert.match(js, /Opportunities \/ deal context/);
+    assert.match(js, /Evidence \/ CRM details/);
+    assert.match(js, /People in this organisation/);
+    assert.match(js, /Commercial story/);
+    assert.match(js, /CRM structure review/);
+    assert.match(js, /Product relationships/);
+    assert.match(js, /Save event/);
+    assert.match(js, /Custom Fields/);
+  });
+});
+
+test("GET /assets/app.css lets the workspace scroll past the analysis hero", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/assets/app.css`);
+    const css = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(css, /\.app-shell\s*\{[^}]*overflow:\s*hidden/s);
+    assert.match(css, /\.workspace\s*\{[^}]*overflow:\s*auto/s);
+    assert.doesNotMatch(css, /\.workspace\s*\{[^}]*display:\s*flex/s);
   });
 });
 
