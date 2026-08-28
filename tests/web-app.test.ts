@@ -80,7 +80,15 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /Portal Genie usage/);
     assert.match(js, /No Sales Command Centre snapshot yet/);
     assert.match(js, /Scan CRM/);
+    assert.match(js, /renderDailyBrief/);
+    assert.match(js, /Do first/);
+    assert.match(js, /Research \/ data required/);
+    assert.match(js, /Commercial watch/);
+    assert.match(js, /data-watch-id/);
+    assert.match(js, /focusWatchItem/);
+    assert.match(js, /Nothing requires immediate customer contact/);
     assert.match(js, /appendKv\(card, "When"/);
+    assert.doesNotMatch(js, /Opportunities worth re-engaging/);
     assert.match(js, /el\("article", \{ class: "cc-item"/);
     assert.match(js, /\/api\/command-centre\/snapshot/);
     assert.match(js, /confirm: true/);
@@ -103,6 +111,8 @@ test("GET /assets/app.css lets the workspace scroll past the analysis hero", asy
     assert.match(css, /\.app-shell\s*\{[^}]*overflow:\s*hidden/s);
     assert.match(css, /\.workspace\s*\{[^}]*overflow:\s*auto/s);
     assert.match(css, /\.cc-queue/);
+    assert.match(css, /\.cc-brief-row/);
+    assert.match(css, /\.cc-brief-watch/);
     assert.match(css, /\.cc-item\s*\{[^}]*color:\s*var\(--ink\)/s);
     assert.doesNotMatch(css, /\.workspace\s*\{[^}]*display:\s*flex/s);
   });

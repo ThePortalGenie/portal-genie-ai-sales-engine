@@ -1365,6 +1365,237 @@ $("nav-toggle")?.addEventListener("click", () => {
 let ccFilter = "ALL";
 let ccScan = null;
 let ccSnapshot = null;
+let ccBriefWaitExpanded = false;
+
+function productLabel(scope) {
+  if (scope === "PORTAL_GENIE") return "Portal Genie";
+  if (scope === "NAGGING_PANDA") return "Nagging Panda";
+  return words(scope);
+}
+
+function briefShortReason(text, max = 140) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return "";
+  const sentence = trimmed.split(/(?<=[.!?])\s+/)[0] || trimmed;
+  if (sentence.length <= max) return sentence;
+  return `${sentence.slice(0, max - 1).trimEnd()}…`;
+}
+
+function briefDoFirstActions(brief, snapshot) {
+  if (brief?.do_first_actions?.length) return brief.do_first_actions;
+  return (snapshot?.watch_items || [])
+    .filter((item) =>
+      (item.priority === "P0" || item.priority === "P1") &&
+      item.executability === "EXECUTABLE_NOW" &&
+      item.actionability_kind === "CUSTOMER_ACTION" &&
+      item.customer_queue !== false,
+    )
+    .map((item) => ({
+      watch_item_id: item.id,
+      organisation_id: item.organisation_id,
+      organisation_name: item.organisation_name,
+      product_scope: item.product_scope,
+      recommended_contact_name: item.recommended_contact_name || item.primary_contact_name,
+      next_best_action: item.next_best_action,
+      when_label: whenLabel(item),
+      reason: briefShortReason(item.why_this_action),
+      priority: item.priority === "P0" ? "P0" : "P1",
+    }));
+}
+
+function briefResearchItems(brief, snapshot) {
+  if (brief?.research_items?.length) return brief.research_items;
+  return (snapshot?.watch_items || [])
+    .filter((item) => item.actionability_kind === "INTERNAL_RESEARCH" || item.actionability_kind === "DATA_REQUIRED")
+    .map((item) => ({
+      watch_item_id: item.id,
+      organisation_id: item.organisation_id,
+      organisation_name: item.organisation_name,
+      product_scope: item.product_scope,
+      next_best_action: item.next_best_action,
+      actionability_kind: item.actionability_kind === "DATA_REQUIRED" ? "DATA_REQUIRED" : "INTERNAL_RESEARCH",
+      reason: briefShortReason(item.why_this_action),
+    }));
+}
+
+function briefWaitItems(brief, snapshot) {
+  if (brief?.wait_items?.length) return brief.wait_items;
+  return (snapshot?.watch_items || [])
+    .filter((item) =>
+      item.actionability_kind !== "INTERNAL_RESEARCH" &&
+      item.actionability_kind !== "DATA_REQUIRED" &&
+      (item.executability === "WAITING_FOR_TIME" ||
+        item.executability === "WAITING_FOR_CUSTOMER" ||
+        item.priority === "P4" ||
+        item.stalled_state === "SCHEDULED_FOLLOW_UP" ||
+        item.stalled_state === "WAITING_ON_CUSTOMER" ||
+        item.next_best_action === "WAIT"),
+    )
+    .map((item) => ({
+      watch_item_id: item.id,
+      organisation_id: item.organisation_id,
+      organisation_name: item.organisation_name,
+      wait_kind: item.action_due_at ? "WAIT_UNTIL" : item.executability === "WAITING_FOR_CUSTOMER" || item.stalled_state === "WAITING_ON_CUSTOMER" ? "WAITING_ON_CUSTOMER" : "NO_ACTION_TODAY",
+      when_label: whenLabel(item),
+      reason: briefShortReason(item.why_this_action),
+      time_sensitive: Boolean(item.action_due_at),
+    }))
+    .sort((left, right) => Number(right.time_sensitive) - Number(left.time_sensitive));
+}
+
+function briefCommercialWatch(brief) {
+  if (brief?.commercial_watch?.length) return brief.commercial_watch;
+  if (brief?.narrative) return [];
+  return [];
+}
+
+function focusWatchItem(watchItemId) {
+  if (!watchItemId) return;
+  ccFilter = "ALL";
+  renderCommandCentre();
+  const target = document.querySelector(`[data-watch-id="${CSS.escape(watchItemId)}"]`);
+  if (!target) return;
+  target.classList.add("cc-item-focused");
+  target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  target.focus({ preventScroll: true });
+}
+
+function briefActionRow(row, onClick) {
+  const button = el("button", {
+    type: "button",
+    class: "cc-brief-row",
+    "aria-label": `${row.organisation_name} ${productLabel(row.product_scope)} ${words(row.next_best_action)}`,
+  });
+  button.append(
+    el("div", { class: "cc-brief-row-title", text: `${row.organisation_name} · ${productLabel(row.product_scope)}` }),
+  );
+  if (row.recommended_contact_name) {
+    button.append(el("div", { class: "cc-brief-row-meta", text: row.recommended_contact_name }));
+  }
+  button.append(el("div", { class: "cc-brief-row-action", text: `${words(row.next_best_action)} · ${row.when_label || "NOW"}` }));
+  if (row.reason) button.append(el("div", { class: "cc-brief-row-reason", text: row.reason }));
+  button.addEventListener("click", () => onClick(row.watch_item_id));
+  return button;
+}
+
+function renderDailyBrief(brief, snapshot) {
+  const card = el("section", { class: "cc-brief" });
+  const header = el("div", { class: "cc-brief-header" }, [
+    el("h2", { text: "Daily sales brief" }),
+    el("div", { class: "cc-brief-freshness", text: `As of ${formatWhen(brief.generated_at || snapshot.generated_at)}` }),
+  ]);
+  card.append(header);
+
+  const doFirst = briefDoFirstActions(brief, snapshot);
+  const doSection = el("div", { class: "cc-brief-section" });
+  doSection.append(el("div", { class: "cc-brief-section-head" }, [
+    el("h3", { text: "Do first" }),
+    el("span", { class: "cc-brief-count", text: `${doFirst.length} action${doFirst.length === 1 ? "" : "s"}` }),
+  ]));
+  if (!doFirst.length) {
+    doSection.append(el("p", { class: "cc-brief-empty", text: "Nothing requires immediate customer contact." }));
+  } else {
+    const rows = el("div", { class: "cc-brief-rows" });
+    for (const row of doFirst) rows.append(briefActionRow(row, focusWatchItem));
+    doSection.append(rows);
+  }
+  card.append(doSection);
+
+  const waitItems = briefWaitItems(brief, snapshot);
+  const waitSection = el("div", { class: "cc-brief-section" });
+  waitSection.append(el("div", { class: "cc-brief-section-head" }, [
+    el("h3", { text: "Wait / don't chase" }),
+    el("span", { class: "cc-brief-count", text: `${waitItems.length} organisation${waitItems.length === 1 ? "" : "s"}` }),
+  ]));
+  const waitVisible = ccBriefWaitExpanded ? waitItems : waitItems.slice(0, 5);
+  if (!waitItems.length) {
+    waitSection.append(el("p", { class: "cc-brief-empty", text: "No organisations are on hold today." }));
+  } else {
+    const rows = el("div", { class: "cc-brief-rows" });
+    for (const row of waitVisible) {
+      const button = el("button", {
+        type: "button",
+        class: "cc-brief-row",
+        "aria-label": `${row.organisation_name} ${row.wait_kind.replaceAll("_", " ")}`,
+      });
+      button.append(el("div", { class: "cc-brief-row-title", text: row.organisation_name }));
+      const label = row.wait_kind === "WAIT_UNTIL"
+        ? row.when_label || "WAIT UNTIL scheduled time"
+        : row.wait_kind === "WAITING_ON_CUSTOMER"
+          ? "WAITING ON CUSTOMER"
+          : "NO ACTION TODAY";
+      button.append(el("div", { class: "cc-brief-row-action", text: label }));
+      if (row.reason) button.append(el("div", { class: "cc-brief-row-reason", text: row.reason }));
+      button.addEventListener("click", () => focusWatchItem(row.watch_item_id));
+      rows.append(button);
+    }
+    waitSection.append(rows);
+    const hidden = waitItems.length - waitVisible.length;
+    if (hidden > 0 && !ccBriefWaitExpanded) {
+      const more = el("button", {
+        type: "button",
+        class: "cc-brief-more",
+        text: `+ ${hidden} more in the queue below`,
+      });
+      more.addEventListener("click", () => {
+        ccBriefWaitExpanded = true;
+        renderCommandCentre();
+      });
+      waitSection.append(more);
+    } else if (ccBriefWaitExpanded && waitItems.length > 5) {
+      const less = el("button", { type: "button", class: "cc-brief-more", text: "Show fewer" });
+      less.addEventListener("click", () => {
+        ccBriefWaitExpanded = false;
+        renderCommandCentre();
+      });
+      waitSection.append(less);
+    }
+  }
+  card.append(waitSection);
+
+  const researchItems = briefResearchItems(brief, snapshot);
+  const researchSection = el("div", { class: "cc-brief-section" });
+  researchSection.append(el("div", { class: "cc-brief-section-head" }, [
+    el("h3", { text: "Research / data required" }),
+    el("span", { class: "cc-brief-count", text: `${researchItems.length} item${researchItems.length === 1 ? "" : "s"}` }),
+  ]));
+  if (!researchItems.length) {
+    researchSection.append(el("p", { class: "cc-brief-empty", text: "No internal research or data gaps flagged." }));
+  } else {
+    const rows = el("div", { class: "cc-brief-rows" });
+    for (const row of researchItems) {
+      const button = el("button", {
+        type: "button",
+        class: "cc-brief-row",
+        "aria-label": `${row.organisation_name} ${words(row.next_best_action)}`,
+      });
+      button.append(el("div", { class: "cc-brief-row-title", text: `${row.organisation_name} · ${productLabel(row.product_scope)}` }));
+      const actionLabel = row.actionability_kind === "DATA_REQUIRED" ? "USAGE DATA REQUIRED" : words(row.next_best_action);
+      button.append(el("div", { class: "cc-brief-row-action", text: actionLabel }));
+      if (row.reason) button.append(el("div", { class: "cc-brief-row-reason", text: row.reason }));
+      button.addEventListener("click", () => focusWatchItem(row.watch_item_id));
+      rows.append(button);
+    }
+    researchSection.append(rows);
+  }
+  card.append(researchSection);
+
+  const watchBullets = briefCommercialWatch(brief);
+  if (watchBullets.length) {
+    const watchSection = el("div", { class: "cc-brief-section" });
+    watchSection.append(el("div", { class: "cc-brief-section-head" }, [el("h3", { text: "Commercial watch" })]));
+    const list = el("ul", { class: "cc-brief-watch" });
+    for (const bullet of watchBullets.slice(0, 5)) list.append(el("li", { text: bullet }));
+    watchSection.append(list);
+    card.append(watchSection);
+  }
+
+  if (brief.warnings?.length) {
+    const warn = el("p", { class: "warn-text", text: `${brief.warnings.length} analysis warning(s) — see queue cards for detail.` });
+    card.append(warn);
+  }
+  return card;
+}
 
 function ccMatches(item, filter) {
   if (filter === "ALL") return true;
@@ -1434,18 +1665,7 @@ function renderCommandCentre() {
   if (ccScan) root.append(renderCcScan(ccScan, false));
 
   const brief = snapshot.brief;
-  if (brief) {
-    const card = el("section", { class: "section" }, [el("h2", { text: "Daily sales brief" })]);
-    card.append(el("p", { text: brief.today_at_a_glance }));
-    if (brief.narrative) card.append(el("p", { text: brief.narrative }));
-    if (brief.do_first?.length) card.append(listBlock("Do first", brief.do_first));
-    if (brief.follow_up_today?.length) card.append(listBlock("Follow up today", brief.follow_up_today));
-    if (brief.stalled?.length) card.append(listBlock("Stalled / needs intervention", brief.stalled));
-    if (brief.wait?.length) card.append(listBlock("Wait — do not chase", brief.wait));
-    if (brief.reengage?.length) card.append(listBlock("Opportunities worth re-engaging", brief.reengage));
-    if (brief.warnings?.length) card.append(listBlock("Data / analysis warnings", brief.warnings));
-    root.append(card);
-  }
+  if (brief) root.append(renderDailyBrief(brief, snapshot));
 
   const filters = el("div", { class: "badge-row cc-filters" });
   for (const filter of ["ALL", "PORTAL_GENIE", "NAGGING_PANDA", "ACTION_TODAY", "STALLED", "WAITING", "WATCH", "NO_ACTION"]) {
@@ -1462,7 +1682,7 @@ function renderCommandCentre() {
   }
   const list = el("div", { class: "cc-queue" });
   for (const item of items) {
-    const card = el("article", { class: "cc-item", tabindex: "0", role: "link" });
+    const card = el("article", { class: "cc-item", tabindex: "0", role: "link", "data-watch-id": item.id });
     card.append(el("div", { class: "badge-row" }, [
       el("span", { class: "pill", text: item.priority }),
       el("span", { class: "pill", text: words(item.product_scope) }),

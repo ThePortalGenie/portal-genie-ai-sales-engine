@@ -201,10 +201,46 @@ export type PortfolioTokenUsage = {
   total_tokens: number;
 };
 
+export type DailyBriefActionRow = {
+  watch_item_id: string;
+  organisation_id: string;
+  organisation_name: string;
+  product_scope: ProductId;
+  recommended_contact_name?: string;
+  next_best_action: WatchAction;
+  when_label: string;
+  reason: string;
+  priority: "P0" | "P1";
+};
+
+export type DailyBriefWaitRow = {
+  watch_item_id: string;
+  organisation_id: string;
+  organisation_name: string;
+  wait_kind: "WAIT_UNTIL" | "WAITING_ON_CUSTOMER" | "NO_ACTION_TODAY";
+  when_label?: string;
+  reason: string;
+  time_sensitive: boolean;
+};
+
+export type DailyBriefResearchRow = {
+  watch_item_id: string;
+  organisation_id: string;
+  organisation_name: string;
+  product_scope: ProductId;
+  next_best_action: WatchAction;
+  actionability_kind: "INTERNAL_RESEARCH" | "DATA_REQUIRED";
+  reason: string;
+};
+
 export type DailySalesBrief = {
   generated_at: string;
   mode: "deterministic" | "openai_synthesis";
   today_at_a_glance: string;
+  do_first_actions: DailyBriefActionRow[];
+  wait_items: DailyBriefWaitRow[];
+  research_items: DailyBriefResearchRow[];
+  commercial_watch: string[];
   do_first: string[];
   follow_up_today: string[];
   research_required: string[];
@@ -213,6 +249,7 @@ export type DailySalesBrief = {
   reengage: string[];
   recent_changes: string[];
   warnings: string[];
+  /** @deprecated Use commercial_watch. Kept for older snapshots. */
   narrative?: string;
 };
 

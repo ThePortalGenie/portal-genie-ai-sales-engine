@@ -22,7 +22,7 @@ import {
   scanCommandCentre,
   _testOnlySelect,
 } from "../src/intelligence/command-centre.js";
-import { deterministicDailyBrief, maybeSynthesizeBrief } from "../src/intelligence/daily-brief.js";
+import { deterministicDailyBrief, maybeSynthesizeBrief, isCustomerExecutableBriefItem } from "../src/intelligence/daily-brief.js";
 import { writePortfolioSnapshot } from "../src/intelligence/portfolio-store.js";
 import { PRIORITY_TIEBREAK, priorityBand, sortWatchItems, classifyExecutability } from "../src/intelligence/priority-rank.js";
 import { validSampleProfile } from "../src/intelligence/profile-schema.js";
@@ -1153,6 +1153,7 @@ test("daily brief excludes impossible USAGE_CHECK and future-wait from Do first"
         organisation_name: "Anthurico Accountants",
         priority: "P4",
         next_best_action: "USAGE_CHECK",
+        actionability_kind: "DATA_REQUIRED",
         executability: "DATA_REQUIRED",
         action_timing: "NO_ACTION_REQUIRED",
       }),
@@ -1177,13 +1178,11 @@ test("daily brief excludes impossible USAGE_CHECK and future-wait from Do first"
     [],
     AS_OF,
   );
-  assert.equal(brief.do_first.length, 0);
-  assert.equal(brief.follow_up_today.length, 1);
+  assert.equal(brief.do_first_actions.length, 1);
   assert.match(brief.follow_up_today[0] ?? "", /FJM Accounting/);
-  assert.ok(brief.wait.some((line) => /USAGE DATA REQUIRED — Anthurico/.test(line)));
-  assert.ok(brief.wait.some((line) => /Kirstin Resolve/.test(line) && /14:00/.test(line)));
-  assert.doesNotMatch(brief.do_first.join(" "), /check usage|USAGE_CHECK|Kirstin/i);
-  assert.doesNotMatch(brief.follow_up_today.join(" "), /check usage|USAGE_CHECK|Kirstin/i);
+  assert.ok(brief.research_items.some((item) => item.organisation_name === "Anthurico Accountants"));
+  assert.ok(brief.wait_items.some((item) => item.organisation_name === "Kirstin Resolve"));
+  assert.doesNotMatch(brief.do_first_actions.map((item) => item.organisation_name).join(" "), /Anthurico|Kirstin/i);
 });
 
 test("deterministic brief falls back with warnings that are not empty activity", () => {
@@ -1212,13 +1211,31 @@ test("deterministic brief falls back with warnings that are not empty activity",
     AS_OF,
   );
   assert.equal(brief.mode, "deterministic");
-  assert.match(brief.today_at_a_glance, /2 customer actions need attention today/);
+  assert.match(brief.today_at_a_glance, /customer action/);
   assert.equal(brief.do_first.length, 1);
   assert.equal(brief.follow_up_today.length, 1);
+  assert.equal(brief.do_first_actions.length, 2);
+  assert.equal(brief.do_first_actions[0]?.priority, "P0");
   assert.match(brief.stalled[0] ?? "", /Quiet Co/);
-  assert.match(brief.wait[0] ?? "", /WAIT UNTIL 2026-09-15/);
+  assert.ok(brief.wait.some((line) => /WAIT UNTIL 2026-09-15/.test(line)));
   assert.match(brief.warnings.join(" "), /could not be fully assessed|UNAVAILABLE/);
   assert.doesNotMatch(brief.warnings.join(" "), /no email activity/i);
+});
+
+test("brief synthesis only updates commercial watch bullets", async () => {
+  const base = deterministicDailyBrief([watch({ priority: "P0", organisation_name: "ABC Accounting" })], [], AS_OF);
+  const result = await maybeSynthesizeBrief(base, async () => ({
+    text: JSON.stringify([
+      "ABC Accounting is the priority customer action today.",
+      "No organisations are waiting on customers.",
+    ]),
+    inputTokens: 12,
+    outputTokens: 8,
+  }));
+  assert.equal(result.brief.mode, "openai_synthesis");
+  assert.equal(result.brief.do_first_actions.length, base.do_first_actions.length);
+  assert.equal(result.brief.commercial_watch.length, 2);
+  assert.equal(result.brief.narrative, undefined);
 });
 
 test("brief synthesis failure keeps the deterministic brief", async () => {
@@ -1450,7 +1467,11 @@ test("brief synthesis is one extra call and does not re-analyse organisations", 
         },
         synthesizer: async () => {
           synthCalls += 1;
-          return { text: "Start with ABC Accounting.", inputTokens: 20, outputTokens: 8 };
+          return {
+            text: JSON.stringify(["Start with the highest-priority customer action."]),
+            inputTokens: 20,
+            outputTokens: 8,
+          };
         },
       },
       { mode: "build_changed", confirm: true, includeBriefSynthesis: true },
@@ -1458,6 +1479,7 @@ test("brief synthesis is one extra call and does not re-analyse organisations", 
     assert.equal(analyseCalls, 0);
     assert.equal(synthCalls, 1);
     assert.equal(snapshot.brief.mode, "openai_synthesis");
+    assert.ok(snapshot.brief.commercial_watch.length >= 1);
     assert.equal(snapshot.tokens.openai_calls, 1);
     assert.equal(snapshot.tokens.input_tokens, 20);
   });
@@ -1531,6 +1553,55 @@ test("executable genuine customer action can remain P1", () => {
     customer_queue: true,
   });
   assert.equal(band, "P1");
+});
+
+test("structured daily brief separates customer actions, wait, research, and commercial watch", () => {
+  const brief = deterministicDailyBrief(
+    [
+      watch({
+        organisation_name: "Customer Co",
+        priority: "P1",
+        actionability_kind: "CUSTOMER_ACTION",
+        customer_queue: true,
+        next_best_action: "PHONE_CALL",
+        recommended_contact_name: "Sam",
+      }),
+      watch({
+        id: "acticem:PORTAL_GENIE",
+        organisation_name: "Acticem",
+        priority: "P3",
+        actionability_kind: "INTERNAL_RESEARCH",
+        next_best_action: "HUMAN_REVIEW",
+        action_timing: "ACT_NOW",
+      }),
+      watch({
+        id: "kirstin:PORTAL_GENIE",
+        organisation_name: "Kirstin Resolve",
+        priority: "P4",
+        actionability_kind: "DATA_REQUIRED",
+        next_best_action: "USAGE_CHECK",
+        executability: "DATA_REQUIRED",
+      }),
+      watch({
+        id: "rae:PORTAL_GENIE",
+        organisation_name: "Rae Accounting",
+        priority: "P4",
+        next_best_action: "WAIT",
+        executability: "WAITING_FOR_CUSTOMER",
+        stalled_state: "WAITING_ON_CUSTOMER",
+      }),
+    ],
+    [],
+    AS_OF,
+  );
+  assert.equal(brief.do_first_actions.length, 1);
+  assert.equal(brief.do_first_actions[0]?.organisation_name, "Customer Co");
+  assert.ok(brief.research_items.some((item) => item.organisation_name === "Acticem"));
+  assert.ok(brief.research_items.some((item) => item.organisation_name === "Kirstin Resolve"));
+  assert.ok(brief.wait_items.some((item) => item.organisation_name === "Rae Accounting"));
+  assert.ok(brief.commercial_watch.length >= 1 && brief.commercial_watch.length <= 5);
+  assert.doesNotMatch(brief.do_first_actions.map((item) => item.organisation_name).join(" "), /Acticem|Kirstin/i);
+  assert.doesNotMatch(brief.wait.join(" "), /Acticem|Kirstin Resolve/i);
 });
 
 test("daily brief separates internal research from customer follow-up", () => {
