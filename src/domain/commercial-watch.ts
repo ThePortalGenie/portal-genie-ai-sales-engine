@@ -34,6 +34,15 @@ export type ActionExecutability = (typeof ACTION_EXECUTABILITIES)[number];
 export const PRIORITY_BANDS = ["P0", "P1", "P2", "P3", "P4", "P5"] as const;
 export type PriorityBand = (typeof PRIORITY_BANDS)[number];
 
+export const ACTIONABILITY_KINDS = [
+  "CUSTOMER_ACTION",
+  "INTERNAL_RESEARCH",
+  "DATA_REQUIRED",
+  "WAIT",
+  "NO_ACTION",
+] as const;
+export type ActionabilityKind = (typeof ACTIONABILITY_KINDS)[number];
+
 export const WATCH_ACTIONS = [
   "PERSONAL_EMAIL",
   "PHONE_CALL",
@@ -149,6 +158,8 @@ export type CommercialWatchItem = {
   contact_ids: string[];
   primary_motion?: SalesMotion;
   next_best_action: WatchAction;
+  actionability_kind: ActionabilityKind;
+  customer_queue: boolean;
   executability: ActionExecutability;
   decision: string;
   action_timing: ActionTiming;
@@ -196,6 +207,7 @@ export type DailySalesBrief = {
   today_at_a_glance: string;
   do_first: string[];
   follow_up_today: string[];
+  research_required: string[];
   stalled: string[];
   wait: string[];
   reengage: string[];
@@ -224,6 +236,13 @@ export type PortfolioSnapshot = {
   analyses_failed: number;
   truncated?: boolean;
   truncated_reason?: string;
+  first_party_organisations?: Array<{
+    organisation_id: string;
+    organisation_name: string;
+    domains: string[];
+    analysis_stored: boolean;
+    note: string;
+  }>;
 };
 
 export type ScanEstimate = {
@@ -250,7 +269,9 @@ export type ScanEstimate = {
     deal_count: number;
     possible_match_reviews: number;
     listing_tags?: string[];
+    first_party?: boolean;
   }>;
+  first_party_organisations?: PortfolioSnapshot["first_party_organisations"];
   tokens: PortfolioTokenUsage;
   openai_would_be_called: number;
 };

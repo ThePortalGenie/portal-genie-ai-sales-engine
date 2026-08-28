@@ -4,13 +4,26 @@ function isExecutableNow(item: CommercialWatchItem): boolean {
   return item.executability === "EXECUTABLE_NOW";
 }
 
+function isCustomerExecutable(item: CommercialWatchItem): boolean {
+  return (
+    (item.priority === "P0" || item.priority === "P1") &&
+    isExecutableNow(item) &&
+    item.actionability_kind === "CUSTOMER_ACTION" &&
+    item.customer_queue
+  );
+}
+
 export function deterministicDailyBrief(
   items: CommercialWatchItem[],
   failures: PortfolioFailure[],
   asOf = new Date().toISOString(),
 ): DailySalesBrief {
-  const p0 = items.filter((item) => item.priority === "P0" && isExecutableNow(item));
-  const p1 = items.filter((item) => item.priority === "P1" && isExecutableNow(item));
+  const customerExecutable = items.filter(isCustomerExecutable);
+  const p0 = customerExecutable.filter((item) => item.priority === "P0");
+  const p1 = customerExecutable.filter((item) => item.priority === "P1");
+  const researchRequired = items.filter(
+    (item) => item.actionability_kind === "INTERNAL_RESEARCH" || item.actionability_kind === "DATA_REQUIRED",
+  );
   const stalled = items.filter((item) => item.stalled_state === "STALLED");
   const waiting = items.filter(
     (item) =>
@@ -39,13 +52,16 @@ export function deterministicDailyBrief(
   ];
   const formatItem = (item: CommercialWatchItem) =>
     `${item.organisation_name} (${item.product_scope.replaceAll("_", " ")}) — ${item.next_best_action.replaceAll("_", " ")} · ${item.action_timing.replaceAll("_", " ")}${item.action_due_at ? ` ${item.action_due_at}` : ""}. ${item.why_this_action}`;
+  const formatResearch = (item: CommercialWatchItem) =>
+    `${item.organisation_name} (${item.product_scope.replaceAll("_", " ")}) — ${item.next_best_action.replaceAll("_", " ")} · ${item.actionability_kind.replaceAll("_", " ")}. ${item.why_this_action}`;
 
   return {
     generated_at: asOf,
     mode: "deterministic",
-    today_at_a_glance: `${p0.length + p1.length} opportunities need action today. ${stalled.length} stalled. ${waiting.length} wait / do not chase. ${warnings.length} analysis warning(s).`,
+    today_at_a_glance: `${p0.length + p1.length} customer actions need attention today. ${researchRequired.length} research/data item(s). ${stalled.length} stalled. ${waiting.length} wait / do not chase. ${warnings.length} analysis warning(s).`,
     do_first: p0.map(formatItem),
     follow_up_today: p1.map(formatItem),
+    research_required: researchRequired.map(formatResearch),
     stalled: stalled.map((item) => `${item.organisation_name}: ${item.stalled_reasons.join(" ")} Recommended: ${item.next_best_action.replaceAll("_", " ")}.`),
     wait: waiting.map((item) => {
       if (item.executability === "DATA_REQUIRED") {
@@ -74,6 +90,7 @@ export async function maybeSynthesizeBrief(
     today_at_a_glance: brief.today_at_a_glance,
     do_first: brief.do_first,
     follow_up_today: brief.follow_up_today,
+    research_required: brief.research_required,
     stalled: brief.stalled,
     wait: brief.wait,
     reengage: brief.reengage,
@@ -84,7 +101,8 @@ export async function maybeSynthesizeBrief(
       [
         "Write a concise operational Daily Sales Brief from ONLY the JSON facts below.",
         "Do not invent organisations, dates, usage, or email activity.",
-        "Do first / follow up today are the only items the operator can act on now.",
+        "Do first / follow up today are customer-facing actions the operator can act on now.",
+        "Research required is internal operator work or missing data — not customer follow-up.",
         "Do not tell the operator to check usage if wait or warnings say usage data is required or no usage dataset is imported.",
         "Do not tell the operator to contact someone before a WAIT UNTIL time. Waiting and data-required items are not Do first.",
         "If warnings mention retrieval ERROR or UNAVAILABLE, say those organisations could not be fully assessed. Never say they had no activity.",

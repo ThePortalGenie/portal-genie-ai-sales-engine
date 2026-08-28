@@ -11,7 +11,9 @@ import type { SalesEvent } from "../src/domain/sales-event.js";
 import { parseSalesEventInput } from "../src/domain/sales-event.js";
 import type { ZohoCrmReader } from "../src/integrations/zoho/client.js";
 import type { ZohoHttpResult } from "../src/integrations/zoho/types.js";
-import { writeStoredAnalysis, type StoredAnalysis } from "../src/intelligence/analysis-store.js";
+import { classifyActionabilityKind } from "../src/intelligence/actionability.js";
+import { loadFirstPartyDomains, isFirstPartyDomain, isFirstPartyOrganisation } from "../src/config/first-party-domains.js";
+import { analysisRootsForCluster, writeStoredAnalysis, type StoredAnalysis } from "../src/intelligence/analysis-store.js";
 import { classifyFollowUpDate, classifyInstant } from "../src/intelligence/calendar-date.js";
 import {
   buildCommandCentre,
@@ -189,6 +191,8 @@ function watch(overrides: Partial<CommercialWatchItem> = {}): CommercialWatchIte
     lead_ids: [],
     contact_ids: [],
     next_best_action: "PHONE_CALL",
+    actionability_kind: "CUSTOMER_ACTION",
+    customer_queue: true,
     executability: "EXECUTABLE_NOW",
     decision: "act",
     action_timing: "ACT_NOW",
@@ -487,9 +491,36 @@ test("stalled engine: missed meeting and waiting on us", () => {
 });
 
 test("priority bands: overdue commitment outranks generic live opportunity; WAIT is P4", () => {
-  assert.equal(priorityBand({ action_timing: "OVERDUE", next_best_action: "FOLLOW_UP", stalled_state: "WAITING_ON_US", liveDeal: true }), "P0");
-  assert.equal(priorityBand({ action_timing: "TODAY", next_best_action: "PHONE_CALL", stalled_state: "NOT_STALLED", liveDeal: false }), "P1");
-  assert.equal(priorityBand({ action_timing: "ACT_NOW", next_best_action: "PHONE_CALL", stalled_state: "NOT_STALLED", liveDeal: true }), "P1");
+  assert.equal(
+    priorityBand({
+      action_timing: "OVERDUE",
+      next_best_action: "FOLLOW_UP",
+      stalled_state: "WAITING_ON_US",
+      liveDeal: true,
+      actionability_kind: "CUSTOMER_ACTION",
+    }),
+    "P0",
+  );
+  assert.equal(
+    priorityBand({
+      action_timing: "TODAY",
+      next_best_action: "PHONE_CALL",
+      stalled_state: "NOT_STALLED",
+      liveDeal: false,
+      actionability_kind: "CUSTOMER_ACTION",
+    }),
+    "P1",
+  );
+  assert.equal(
+    priorityBand({
+      action_timing: "ACT_NOW",
+      next_best_action: "PHONE_CALL",
+      stalled_state: "NOT_STALLED",
+      liveDeal: true,
+      actionability_kind: "CUSTOMER_ACTION",
+    }),
+    "P1",
+  );
   assert.equal(priorityBand({ action_timing: "WAIT_UNTIL", next_best_action: "WAIT", stalled_state: "SCHEDULED_FOLLOW_UP", liveDeal: true }), "P4");
   assert.equal(priorityBand({ action_timing: "NO_ACTION_REQUIRED", next_best_action: "NO_ACTION", stalled_state: "NOT_STALLED", liveDeal: false }), "P5");
   assert.match(PRIORITY_TIEBREAK, /Overdue commitments/);
@@ -525,6 +556,7 @@ test("executability owns P0/P1: wait, customer, and data-required are not the ac
       stalled_state: "NOT_STALLED",
       liveDeal: true,
       executability: "EXECUTABLE_NOW",
+      actionability_kind: "CUSTOMER_ACTION",
     }),
     "P1",
   );
@@ -1180,7 +1212,7 @@ test("deterministic brief falls back with warnings that are not empty activity",
     AS_OF,
   );
   assert.equal(brief.mode, "deterministic");
-  assert.match(brief.today_at_a_glance, /2 opportunities need action today/);
+  assert.match(brief.today_at_a_glance, /2 customer actions need attention today/);
   assert.equal(brief.do_first.length, 1);
   assert.equal(brief.follow_up_today.length, 1);
   assert.match(brief.stalled[0] ?? "", /Quiet Co/);
@@ -1449,6 +1481,271 @@ test("GET snapshot without a stored file is 200 with null snapshot, not 404", as
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
+});
+
+test("HUMAN_REVIEW is classified as internal research and does not become customer P0/P1", () => {
+  const kind = classifyActionabilityKind({
+    action: "HUMAN_REVIEW",
+    executability: "EXECUTABLE_NOW",
+    stalledState: "NOT_STALLED",
+  });
+  assert.equal(kind, "INTERNAL_RESEARCH");
+  const band = priorityBand({
+    action_timing: "ACT_NOW",
+    next_best_action: "HUMAN_REVIEW",
+    stalled_state: "NOT_STALLED",
+    liveDeal: false,
+    executability: "EXECUTABLE_NOW",
+    actionability_kind: "INTERNAL_RESEARCH",
+  });
+  assert.notEqual(band, "P0");
+  assert.notEqual(band, "P1");
+});
+
+test("EXTERNAL_ENRICHMENT is classified as internal research and does not become customer P0/P1", () => {
+  const kind = classifyActionabilityKind({
+    action: "EXTERNAL_ENRICHMENT",
+    executability: "EXECUTABLE_NOW",
+    stalledState: "NOT_STALLED",
+  });
+  assert.equal(kind, "INTERNAL_RESEARCH");
+  const band = priorityBand({
+    action_timing: "TODAY",
+    next_best_action: "EXTERNAL_ENRICHMENT",
+    stalled_state: "NOT_STALLED",
+    liveDeal: false,
+    executability: "EXECUTABLE_NOW",
+    actionability_kind: "INTERNAL_RESEARCH",
+  });
+  assert.equal(band, "P3");
+});
+
+test("executable genuine customer action can remain P1", () => {
+  const band = priorityBand({
+    action_timing: "ACT_NOW",
+    next_best_action: "PHONE_CALL",
+    stalled_state: "NOT_STALLED",
+    liveDeal: true,
+    executability: "EXECUTABLE_NOW",
+    actionability_kind: "CUSTOMER_ACTION",
+    customer_queue: true,
+  });
+  assert.equal(band, "P1");
+});
+
+test("daily brief separates internal research from customer follow-up", () => {
+  const brief = deterministicDailyBrief(
+    [
+      watch({
+        organisation_name: "Customer Co",
+        priority: "P1",
+        actionability_kind: "CUSTOMER_ACTION",
+        customer_queue: true,
+        next_best_action: "PHONE_CALL",
+      }),
+      watch({
+        organisation_name: "Acticem",
+        priority: "P3",
+        actionability_kind: "INTERNAL_RESEARCH",
+        next_best_action: "HUMAN_REVIEW",
+        action_timing: "ACT_NOW",
+      }),
+    ],
+    [],
+    AS_OF,
+  );
+  assert.equal(brief.follow_up_today.length, 1);
+  assert.equal(brief.research_required.length, 1);
+  assert.match(brief.research_required[0] ?? "", /Acticem/);
+  assert.doesNotMatch(brief.follow_up_today.join(" "), /Acticem|HUMAN_REVIEW/i);
+});
+
+test("first-party domain configuration excludes internal organisations from customer queue", () => {
+  const firstParty = loadFirstPartyDomains();
+  assert.ok(isFirstPartyDomain("theportalgenie.com", firstParty));
+  assert.ok(isFirstPartyDomain("naggingpanda.com", firstParty));
+  assert.equal(isFirstPartyDomain("abc.test", firstParty), false);
+  const [cluster] = groupUniverseRecords(
+    [rec({ module: "Contacts", recordId: "c1", name: "Geoff", email: "geoff@theportalgenie.com" })],
+    PUBLIC,
+  );
+  assert.equal(isFirstPartyOrganisation(cluster!, firstParty, PUBLIC), true);
+  const [item] = watchItemsFromAnalysis(stored(), {
+    organisationId: cluster!.organisationId,
+    organisationName: cluster!.organisationName,
+    reuse: "reused",
+    customerQueue: false,
+    asOf: AS_OF,
+  });
+  assert.ok(item);
+  assert.equal(item.customer_queue, false);
+  assert.equal(item.priority, "P5");
+  assert.ok(item.evidence_refs.length >= 0);
+});
+
+test("Account-rooted stored analysis reuses when fingerprint matches", async () => {
+  await withIsolatedStores(async () => {
+    const records = [
+      rec({
+        module: "Accounts",
+        recordId: "a-acticem",
+        name: "Acticem",
+        accountId: "a-acticem",
+        accountName: "Acticem",
+        modifiedAt: "2026-08-20T10:00:00Z",
+      }),
+    ];
+    const [cluster] = groupUniverseRecords(records, PUBLIC);
+    assert.equal(cluster!.representative.module, "Accounts");
+    const fingerprint = fingerprintForCluster(cluster!, loadUsageImportMeta().importedAt);
+    writeStoredAnalysis(
+      stored({
+        module: "Accounts",
+        recordId: "a-acticem",
+        evidenceFingerprint: fingerprint,
+        analysedAt: "2099-01-01T00:00:00Z",
+      }),
+    );
+    const decision = reuseDecision(cluster!, fingerprint);
+    assert.equal(decision.reuse, "reuse");
+    assert.match(decision.reason, /fingerprint unchanged/i);
+    assert.deepEqual(analysisRootsForCluster(cluster!)[0], { module: "Accounts", recordId: "a-acticem" });
+  });
+});
+
+test("Account-rooted fingerprint still invalidates when CRM listing changes", async () => {
+  await withIsolatedStores(async () => {
+    const records = [
+      rec({
+        module: "Accounts",
+        recordId: "a-acticem",
+        name: "Acticem",
+        accountId: "a-acticem",
+        accountName: "Acticem",
+        modifiedAt: "2026-08-20T10:00:00Z",
+      }),
+    ];
+    const [cluster] = groupUniverseRecords(records, PUBLIC);
+    writeStoredAnalysis(
+      stored({
+        module: "Accounts",
+        recordId: "a-acticem",
+        analysedAt: "2026-08-01T00:00:00Z",
+      }),
+    );
+    const changed = reuseDecision(cluster!, "new-fingerprint");
+    assert.equal(changed.reuse, "refresh");
+  });
+});
+
+test("listing Deals merge into WatchItem deal_ids when organisation graph omits them", () => {
+  const [item] = watchItemsFromAnalysis(
+    stored({
+      organisationGraph: graph({ deals: [] }),
+      productRelationships: [
+        {
+          product: "PORTAL_GENIE",
+          relationship_state: "PARTNER_PROSPECT",
+          evidence_ids: ["ev-1"],
+          summary: "Partner conversation",
+          confidence: "HIGH",
+        },
+      ],
+    }),
+    {
+      organisationId: "domain:partner.test",
+      organisationName: "Partner Co",
+      reuse: "reused",
+      asOf: AS_OF,
+      listingDeals: [
+        rec({
+          module: "Deals",
+          recordId: "d-partner",
+          name: "Firm Partner",
+          stage: "Qualification",
+          pipeline: "Partner",
+        }),
+      ],
+    },
+  );
+  assert.ok(item);
+  assert.ok(item.deal_ids.includes("d-partner"));
+});
+
+test("listing Nagging Panda deal does not suppress Portal Genie watch when PG relationship row exists", () => {
+  const items = watchItemsFromAnalysis(
+    stored({
+      profile: validSampleProfile({ recommended_action: "HUMAN_REVIEW" }),
+      organisationGraph: graph({ deals: [] }),
+      productRelationships: [
+        {
+          product: "PORTAL_GENIE",
+          relationship_state: "UNKNOWN",
+          evidence_ids: ["ev-1"],
+          summary: "Unknown Portal Genie relationship",
+          confidence: "LOW",
+        },
+        {
+          product: "NAGGING_PANDA",
+          relationship_state: "UNKNOWN",
+          evidence_ids: [],
+          summary: "Unknown Nagging Panda relationship",
+          confidence: "LOW",
+        },
+      ],
+    }),
+    {
+      organisationId: "zoho-account:a1",
+      organisationName: "Acticem",
+      reuse: "reused",
+      asOf: AS_OF,
+      listingDeals: [
+        rec({
+          module: "Deals",
+          recordId: "d-np-lost",
+          name: "NP Closed Lost",
+          stage: "Closed Lost",
+          pipeline: "Nagging Panda",
+        }),
+      ],
+    },
+  );
+  const pg = items.find((item) => item.product_scope === "PORTAL_GENIE");
+  const np = items.find((item) => item.product_scope === "NAGGING_PANDA");
+  assert.ok(pg);
+  assert.equal(pg.next_best_action, "HUMAN_REVIEW");
+  assert.equal(pg.actionability_kind, "INTERNAL_RESEARCH");
+  assert.notEqual(pg.priority, "P1");
+  assert.ok(np);
+  assert.equal(np.next_best_action, "NO_ACTION");
+});
+
+test("WAIT and do-not-chase behaviour remains intact after actionability hardening", () => {
+  const [item] = watchItemsFromAnalysis(
+    stored({
+      profile: validSampleProfile({ recommended_action: "WAIT", recommended_action_reason: "Customer asked to wait." }),
+      organisationGraph: graph({
+        salesEvents: [
+          parseSalesEventInput({
+            organisation_id: "domain:abc.test",
+            contact_id: "c1",
+            product_scope: "PORTAL_GENIE",
+            event_type: "FOLLOW_UP",
+            occurred_at: "2026-08-01T10:00:00Z",
+            follow_up_date: "2026-09-15",
+            outcome: "FOLLOW_UP_REQUESTED",
+            summary: "Reconnect mid September",
+          }) as SalesEvent,
+        ],
+      }),
+    }),
+    { organisationId: "domain:abc.test", organisationName: "Wait Co", reuse: "reused", asOf: AS_OF },
+  );
+  assert.ok(item);
+  assert.equal(item.next_best_action, "WAIT");
+  assert.equal(item.actionability_kind, "WAIT");
+  assert.equal(item.priority, "P4");
+  assert.equal(item.executability, "WAITING_FOR_TIME");
 });
 
 test("GET snapshot does not trigger OpenAI; POST build without confirm is rejected", async () => {

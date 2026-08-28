@@ -2,6 +2,7 @@ import type { StoredAnalysis } from "./analysis-store.js";
 import type {
   CommercialWatchItem,
   CommandCentreThresholds,
+  UniverseRecord,
   WatchAction,
 } from "../domain/commercial-watch.js";
 import { asWatchAction, DEFAULT_COMMAND_CENTRE_THRESHOLDS } from "../domain/commercial-watch.js";
@@ -16,8 +17,35 @@ import { deterministicWatchSignals, type WatchEvidenceInput } from "./watch-sign
 import { applyPriority, classifyExecutability, decideActionTiming, overrideAction } from "./priority-rank.js";
 import { classifyStalled } from "./stalled-engine.js";
 import { classifyDealProduct } from "./org-graph.js";
+import { classifyActionabilityKind } from "./actionability.js";
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+function dealsFromListing(records?: UniverseRecord[]): OrganisationDealNode[] {
+  return (records ?? [])
+    .filter((item) => item.module === "Deals")
+    .map((item) => {
+      const stage = item.stage;
+      return {
+        recordId: item.recordId,
+        name: item.name,
+        stage,
+        pipeline: item.pipeline,
+        product: classifyDealProduct(item.name, item.pipeline),
+        closedLost: Boolean(stage && /lost/i.test(stage)),
+        closedWon: Boolean(stage && /won/i.test(stage) && !/lost/i.test(stage)),
+        provenance: "universe_listing",
+      };
+    });
+}
+
+function mergeDeals(graphDeals: OrganisationDealNode[], listingDeals: OrganisationDealNode[]): OrganisationDealNode[] {
+  const merged = [...graphDeals];
+  for (const deal of listingDeals) {
+    if (!merged.some((item) => item.recordId === deal.recordId)) merged.push(deal);
+  }
+  return merged;
+}
 
 function parseMs(value: string): number {
   return DATE_ONLY.test(value.trim()) ? Date.parse(`${value.trim()}T00:00:00Z`) : Date.parse(value);
@@ -50,7 +78,8 @@ function productsForWatch(analysis: StoredAnalysis): ProductId[] {
   const pg =
     products.find((item) => item.product === "PORTAL_GENIE" && item.relationship_state !== "UNKNOWN") ||
     deals.some((deal) => deal.product === "PORTAL_GENIE" || classifyDealProduct(deal.name, deal.pipeline) === "PORTAL_GENIE") ||
-    analysis.organisation?.usage.status === "matched";
+    analysis.organisation?.usage.status === "matched" ||
+    products.some((item) => item.product === "PORTAL_GENIE");
   const np =
     products.find((item) => item.product === "NAGGING_PANDA" && item.relationship_state !== "UNKNOWN") ||
     deals.some((deal) => deal.product === "NAGGING_PANDA" || classifyDealProduct(deal.name, deal.pipeline) === "NAGGING_PANDA");
@@ -168,6 +197,8 @@ export function watchItemsFromAnalysis(
     reuse: CommercialWatchItem["reuse"];
     possibleMatchReview?: boolean;
     usageDatasetAvailable?: boolean;
+    listingDeals?: UniverseRecord[];
+    customerQueue?: boolean;
   },
 ): CommercialWatchItem[] {
   const asOf = options.asOf ?? new Date().toISOString();
@@ -216,9 +247,11 @@ export function watchItemsFromAnalysis(
   const contacts = graph?.contacts.filter((item) => item.module === "Contacts") ?? [];
   const leads = graph?.contacts.filter((item) => item.module === "Leads") ?? analysis.organisation?.members.filter((item) => item.module === "Leads") ?? [];
   const selected = graph?.contacts.find((item) => item.selected) ?? contacts[0];
+  const allDeals = mergeDeals(graph?.deals ?? [], dealsFromListing(options.listingDeals));
+  const customerQueue = options.customerQueue !== false;
 
-  return productsForWatch(analysis).map((product) => {
-    const productDeals = (graph?.deals ?? []).filter(
+  return productsForWatch({ ...analysis, organisationGraph: graph ? { ...graph, deals: allDeals } : { deals: allDeals } as OrganisationGraph }).map((product) => {
+    const productDeals = allDeals.filter(
       (deal) => deal.product === product || classifyDealProduct(deal.name, deal.pipeline) === product,
     );
     const liveDeal = productDeals.some((deal) => !deal.closedLost && !deal.closedWon);
@@ -274,6 +307,11 @@ export function watchItemsFromAnalysis(
       usageDatasetAvailable,
       usageUnknown: product === "PORTAL_GENIE" ? usageUnknown : true,
     });
+    const actionability_kind = classifyActionabilityKind({
+      action,
+      executability,
+      stalledState: stalled.state,
+    });
     const omitContact = action === "NO_ACTION" && historicalLostOnly;
     const contact = productRecommendedContact(graph, productDeals, productEvents, omitContact, profile?.best_contact);
     const whenLabel = commitment.at ? formatZonedDateTime(commitment.at, thresholds.timeZone) ?? commitment.at : undefined;
@@ -311,6 +349,8 @@ export function watchItemsFromAnalysis(
       contact_ids: contacts.map((item) => item.recordId),
       primary_motion: profile?.primary_opportunity.motion,
       next_best_action: action,
+      actionability_kind,
+      customer_queue: customerQueue,
       executability,
       decision: profile?.decision_state ?? stalled.state,
       action_timing: timing,

@@ -91,3 +91,23 @@ export function findStoredAnalysisForRecords(records: Array<{ module: string; re
   }
   return undefined;
 }
+
+/**
+ * Analysis roots for an organisation cluster, including Account representatives.
+ */
+export function analysisRootsForCluster(cluster: {
+  representative: { module: string; recordId: string };
+  records: Array<{ module: string; recordId: string }>;
+}): Array<{ module: string; recordId: string }> {
+  const roots: Array<{ module: string; recordId: string }> = [
+    { module: cluster.representative.module, recordId: cluster.representative.recordId },
+  ];
+  for (const record of cluster.records) {
+    if (record.module !== "Contacts" && record.module !== "Leads" && record.module !== "Accounts") continue;
+    const key = `${record.module}:${record.recordId}`;
+    if (!roots.some((item) => `${item.module}:${item.recordId}` === key)) {
+      roots.push({ module: record.module, recordId: record.recordId });
+    }
+  }
+  return roots;
+}

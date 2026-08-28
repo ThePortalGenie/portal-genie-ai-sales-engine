@@ -1,6 +1,7 @@
 import type {
   ActionExecutability,
   ActionTiming,
+  ActionabilityKind,
   CommercialWatchItem,
   PriorityBand,
   WatchAction,
@@ -24,7 +25,7 @@ import type { WatchEvidenceInput } from "./watch-signals.js";
  * AI must not create this ordering.
  */
 export const PRIORITY_TIEBREAK =
-  "Overdue commitments, then due date, stalled state, live deal, unanswered attempts, recent inbound, growing usage, confidence, organisation name. P0/P1 require EXECUTABLE_NOW.";
+  "Overdue commitments, then due date, stalled state, live deal, unanswered attempts, recent inbound, growing usage, confidence, organisation name. P0/P1 require EXECUTABLE_NOW customer-facing actions.";
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -87,6 +88,8 @@ export function priorityBand(item: {
   stalled_state: string;
   liveDeal: boolean;
   executability?: ActionExecutability;
+  actionability_kind?: ActionabilityKind;
+  customer_queue?: boolean;
 }): PriorityBand {
   const executability =
     item.executability ??
@@ -95,7 +98,16 @@ export function priorityBand(item: {
       timing: item.action_timing,
       stalledState: item.stalled_state,
     });
-  if (item.stalled_state === "WAITING_ON_US" && executability === "EXECUTABLE_NOW") return "P0";
+  if (item.customer_queue === false) {
+    return "P5";
+  }
+  if (executability === "EXECUTABLE_NOW" && item.actionability_kind === "INTERNAL_RESEARCH") {
+    if (item.stalled_state === "STALLED") return "P2";
+    return "P3";
+  }
+  if (item.stalled_state === "WAITING_ON_US" && executability === "EXECUTABLE_NOW" && item.actionability_kind === "CUSTOMER_ACTION") {
+    return "P0";
+  }
   if (executability === "WAITING_FOR_TIME" || executability === "WAITING_FOR_CUSTOMER" || executability === "DATA_REQUIRED") {
     return "P4";
   }
@@ -104,8 +116,13 @@ export function priorityBand(item: {
     if (item.next_best_action === "NURTURE" || item.stalled_state === "WATCH") return "P3";
     return "P5";
   }
-  if (item.action_timing === "OVERDUE") return "P0";
-  if (item.action_timing === "TODAY" || item.action_timing === "ACT_NOW") return "P1";
+  if (item.action_timing === "OVERDUE" && item.actionability_kind === "CUSTOMER_ACTION") return "P0";
+  if (
+    (item.action_timing === "TODAY" || item.action_timing === "ACT_NOW") &&
+    item.actionability_kind === "CUSTOMER_ACTION"
+  ) {
+    return "P1";
+  }
   if (item.stalled_state === "STALLED") return "P2";
   if (item.liveDeal && item.action_timing !== "WAIT_UNTIL" && item.action_timing !== "NO_ACTION_REQUIRED") return "P2";
   if (item.stalled_state === "WATCH" || item.next_best_action === "NURTURE") return "P3";
@@ -176,6 +193,8 @@ export function applyPriority(
     stalled_state: item.stalled_state,
     liveDeal: item.liveDeal,
     executability: item.executability,
+    actionability_kind: item.actionability_kind,
+    customer_queue: item.customer_queue,
   });
   const { liveDeal: _live, ...rest } = item;
   return {

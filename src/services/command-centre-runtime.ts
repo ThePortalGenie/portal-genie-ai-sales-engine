@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { loadEnvFile } from "../config/load-env.js";
 import { loadPublicEmailDomains } from "../intelligence/email-domains.js";
 import { loadCommandCentreThresholds } from "../config/command-centre.js";
+import { loadFirstPartyDomains } from "../config/first-party-domains.js";
 import { zohoRuntime } from "./zoho-runtime.js";
 import { runCommercialAnalysis } from "./intelligence-runtime.js";
 import { scanCommandCentre, buildCommandCentre, type CommandCentreDeps } from "../intelligence/command-centre.js";
@@ -36,6 +37,7 @@ function deps(): CommandCentreDeps {
   return {
     client,
     publicDomains: loadPublicEmailDomains(),
+    firstPartyDomains: loadFirstPartyDomains(),
     thresholds: loadCommandCentreThresholds(),
     analyse: (moduleName, recordId) => runCommercialAnalysis({ module: moduleName, recordId, force: true }),
     synthesizer,

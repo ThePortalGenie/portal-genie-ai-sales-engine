@@ -10,7 +10,7 @@ import type {
 } from "../domain/commercial-watch.js";
 import { DEFAULT_COMMAND_CENTRE_THRESHOLDS } from "../domain/commercial-watch.js";
 import type { StoredAnalysis } from "./analysis-store.js";
-import { findStoredAnalysisForRecords, writeStoredAnalysis } from "./analysis-store.js";
+import { analysisRootsForCluster, findStoredAnalysisForRecords, writeStoredAnalysis } from "./analysis-store.js";
 import { listSalesEvents } from "./sales-event-store.js";
 import { loadUsageImportMeta, usageImportIsOperational } from "./usage-match.js";
 import { clusterFingerprint } from "./evidence-fingerprint.js";
@@ -27,12 +27,15 @@ import {
   listingTagsForCluster,
   selectOrganisationsForCommandCentre,
 } from "./universe-select.js";
+import { isFirstPartyOrganisation } from "../config/first-party-domains.js";
+import { loadFirstPartyDomains } from "../config/first-party-domains.js";
 
 export type AnalyseFn = (moduleName: string, recordId: string) => Promise<StoredAnalysis>;
 
 export type CommandCentreDeps = {
   client: ZohoCrmReader;
   publicDomains: Set<string>;
+  firstPartyDomains?: Set<string>;
   thresholds?: CommandCentreThresholds;
   analyse: AnalyseFn;
   synthesizer?: (prompt: string) => Promise<{ text: string; inputTokens?: number; outputTokens?: number }>;
@@ -63,11 +66,7 @@ export function reuseDecision(
   fingerprint: string,
   usageImportedAt?: string,
 ): { stored?: StoredAnalysis; reuse: "reuse" | "refresh" | "missing"; reason: string } {
-  const stored = findStoredAnalysisForRecords(
-    cluster.records
-      .filter((item) => item.module === "Contacts" || item.module === "Leads")
-      .map((item) => ({ module: item.module, recordId: item.recordId })),
-  );
+  const stored = findStoredAnalysisForRecords(analysisRootsForCluster(cluster));
   if (!stored?.success || !stored.profile) {
     return { stored, reuse: "missing", reason: "No successful stored organisation analysis." };
   }
@@ -121,6 +120,7 @@ export async function scanCommandCentre(
   options: { maxOrganisations?: number; persist?: boolean; organisationIds?: string[] } = {},
 ): Promise<ScanEstimate> {
   const thresholds = deps.thresholds ?? DEFAULT_COMMAND_CENTRE_THRESHOLDS;
+  const firstPartyDomains = deps.firstPartyDomains ?? loadFirstPartyDomains();
   const asOf = (deps.now ?? (() => new Date()))().toISOString();
   const usageImportedAt = loadUsageImportMeta().importedAt;
   const discovered = await discoverUniverse(deps.client, { maxRecordsPerModule: thresholds.maxRecordsPerModule });
@@ -131,6 +131,7 @@ export async function scanCommandCentre(
   const organisations = selected.map((cluster) => {
     const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
     const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
+    const firstParty = isFirstPartyOrganisation(cluster, firstPartyDomains, deps.publicDomains);
     return {
       organisation_id: cluster.organisationId,
       organisation_name: cluster.organisationName,
@@ -143,6 +144,7 @@ export async function scanCommandCentre(
       deal_count: cluster.records.filter((item) => item.module === "Deals").length,
       possible_match_reviews: cluster.possibleMatchReviews.length,
       listing_tags: listingTagsForCluster(cluster, asOf, thresholds.timeZone),
+      first_party: firstParty,
     };
   });
   const estimate: ScanEstimate = {
@@ -163,6 +165,18 @@ export async function scanCommandCentre(
           ? `Module listing capped at ${thresholds.maxRecordsPerModule} records.`
           : undefined,
     organisations,
+    first_party_organisations: organisations
+      .filter((item) => item.first_party)
+      .map((item) => {
+        const cluster = selected.find((candidate) => candidate.organisationId === item.organisation_id)!;
+        return {
+          organisation_id: item.organisation_id,
+          organisation_name: item.organisation_name,
+          domains: cluster.domains,
+          analysis_stored: item.reuse === "reuse",
+          note: "Internal first-party organisation. Evidence preserved; excluded from external customer queue.",
+        };
+      }),
     tokens: { openai_calls: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0 },
     openai_would_be_called: organisations.filter((item) => item.reuse !== "reuse").length,
   };
@@ -185,6 +199,7 @@ export async function buildCommandCentre(
   }
   const started = Date.now();
   const thresholds = deps.thresholds ?? DEFAULT_COMMAND_CENTRE_THRESHOLDS;
+  const firstPartyDomains = deps.firstPartyDomains ?? loadFirstPartyDomains();
   const asOf = (deps.now ?? (() => new Date()))().toISOString();
   const usageImportedAt = loadUsageImportMeta().importedAt;
   const discovered = await discoverUniverse(deps.client, { maxRecordsPerModule: thresholds.maxRecordsPerModule });
@@ -210,9 +225,21 @@ export async function buildCommandCentre(
   let outputTokens = 0;
   let openaiCalls = 0;
 
+  const firstPartyTracked: NonNullable<PortfolioSnapshot["first_party_organisations"]> = [];
+
   const built = await mapLimit(clusters, thresholds.analyseConcurrency, async (cluster) => {
     const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
     const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
+    const firstParty = isFirstPartyOrganisation(cluster, firstPartyDomains, deps.publicDomains);
+    if (firstParty) {
+      firstPartyTracked.push({
+        organisation_id: cluster.organisationId,
+        organisation_name: cluster.organisationName,
+        domains: cluster.domains,
+        analysis_stored: decision.reuse === "reuse" || Boolean(decision.stored?.success),
+        note: "Internal first-party organisation. Evidence preserved; excluded from external customer queue.",
+      });
+    }
     const mustRefresh = options.mode === "full_rebuild" || decision.reuse !== "reuse";
     let analysis = decision.stored;
     let reuse: "reused" | "refreshed" | "failed" | "insufficient" = "reused";
@@ -260,6 +287,8 @@ export async function buildCommandCentre(
       reuse,
       possibleMatchReview: cluster.possibleMatchReviews.length > 0,
       usageDatasetAvailable: usageImportIsOperational(),
+      listingDeals: cluster.records.filter((item) => item.module === "Deals"),
+      customerQueue: !firstParty,
     });
   });
 
@@ -291,7 +320,11 @@ export async function buildCommandCentre(
         item.next_best_action === "WAIT",
     ).length,
     needs_action_today: items.filter(
-      (item) => (item.priority === "P0" || item.priority === "P1") && item.executability === "EXECUTABLE_NOW",
+      (item) =>
+        (item.priority === "P0" || item.priority === "P1") &&
+        item.executability === "EXECUTABLE_NOW" &&
+        item.actionability_kind === "CUSTOMER_ACTION" &&
+        item.customer_queue,
     ).length,
     active_opportunities: items.filter((item) => item.opportunity_signals.some((signal) => signal.code === "LIVE_DEAL_PRESENT")).length,
     brief,
@@ -305,6 +338,7 @@ export async function buildCommandCentre(
     analyses_reused: reused,
     analyses_refreshed: refreshed,
     analyses_failed: failed,
+    first_party_organisations: firstPartyTracked.length ? firstPartyTracked : undefined,
     truncated: discovered.truncated || clusters.length < universe.length,
     truncated_reason:
       clusters.length < universe.length
