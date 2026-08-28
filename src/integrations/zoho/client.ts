@@ -28,6 +28,17 @@ export type ZohoCrmReader = {
   getTags(moduleApiName: string): Promise<ZohoHttpResult>;
   searchByWord(moduleApiName: string, word: string): Promise<ZohoHttpResult>;
   getOrg(): Promise<ZohoHttpResult>;
+  getRecords(
+    moduleApiName: string,
+    query: {
+      fields: string[];
+      page?: number;
+      perPage?: number;
+      sortBy?: string;
+      sortOrder?: string;
+      converted?: string;
+    },
+  ): Promise<ZohoHttpResult>;
 };
 
 export class ZohoCrmReadClient implements ZohoCrmReader {
@@ -106,5 +117,26 @@ export class ZohoCrmReadClient implements ZohoCrmReader {
 
   getOrg(): Promise<ZohoHttpResult> {
     return this.http.get(`/crm/${ZOHO_CRM_API_VERSION}/org`);
+  }
+
+  getRecords(
+    moduleApiName: string,
+    query: {
+      fields: string[];
+      page?: number;
+      perPage?: number;
+      sortBy?: string;
+      sortOrder?: string;
+      converted?: string;
+    },
+  ): Promise<ZohoHttpResult> {
+    return this.http.get(`/crm/${ZOHO_CRM_API_VERSION}/${moduleApiName}`, {
+      fields: query.fields.slice(0, MAX_RELATED_FIELDS).join(","),
+      page: String(query.page ?? 1),
+      per_page: String(query.perPage ?? 200),
+      sort_by: query.sortBy,
+      sort_order: query.sortOrder,
+      converted: query.converted,
+    });
   }
 }

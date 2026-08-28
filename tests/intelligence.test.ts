@@ -55,6 +55,7 @@ function fakeClient(options: { contacts?: unknown[]; search?: unknown[] } = {}):
     async getTags() { return emptyResult(); },
     async searchByWord() { return ok({ data: options.search ?? [] }); },
     async getOrg() { return emptyResult(); },
+    async getRecords() { return emptyResult(); },
   };
 }
 

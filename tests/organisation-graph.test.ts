@@ -320,6 +320,9 @@ function orgFixtureClient(options: { extraContacts?: number } = {}): { client: Z
     async getOrg() {
       return emptyResult();
     },
+    async getRecords() {
+      return emptyResult();
+    },
   };
   return { client, calls };
 }
@@ -774,6 +777,9 @@ test("request-level cache prevents duplicate retrieval in one analysis", async (
       return emptyResult();
     },
     async getOrg() {
+      return emptyResult();
+    },
+    async getRecords() {
       return emptyResult();
     },
   };

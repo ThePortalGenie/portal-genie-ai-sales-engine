@@ -89,6 +89,9 @@ export class ZohoRuntime {
   }
 
   getClient(): { client: ZohoCrmReader; oauth: ZohoOAuth; env: ZohoEnv } {
+    if (this.runtime) {
+      return this.runtime;
+    }
     const loaded = this.tryLoad();
     if ("error" in loaded) {
       throw new ConfigurationError(loaded.error);

@@ -26,6 +26,9 @@
         </div>
 
         <nav class="side-nav" aria-label="Primary">
+          <a href="#command-centre" data-nav="command-centre">
+            <span class="nav-ico" aria-hidden="true">◈</span> Command Centre
+          </a>
           <a href="#overview" data-nav="overview">
             <span class="nav-ico" aria-hidden="true">▣</span> Overview
           </a>
@@ -67,8 +70,12 @@
 
         <main id="main">
           <section id="page-overview" class="page hidden">
-            <p class="lede">A commercial workspace for one operator. Search a relationship, read the organisation story, then record what happened in the real world.</p>
+            <p class="lede">A commercial workspace for one operator. Start in Command Centre for the daily queue, or open a single relationship in CRM Explorer.</p>
             <div class="overview-grid">
+              <a class="launch-card" href="#command-centre">
+                <h2>Command Centre</h2>
+                <p>Who needs attention, in what order, what to do, when, and why — without hunting through Zoho.</p>
+              </a>
               <a class="launch-card" href="#explorer">
                 <h2>CRM Explorer</h2>
                 <p>Search a person, organisation, email or Zoho record. Open commercial intelligence without leaving the workspace.</p>
@@ -76,11 +83,6 @@
               <a class="launch-card" href="#usage">
                 <h2>Usage Intelligence</h2>
                 <p>Import Portal Genie usage from CSV. Product behaviour stays separate from CRM facts.</p>
-              </a>
-              <a class="launch-card muted-card" href="#pipeline">
-                <h2>Pipeline Intelligence</h2>
-                <p>Not built yet. Ranking and queue work will come after this workspace is proven.</p>
-                <span class="pill">Coming later</span>
               </a>
               <a class="launch-card" href="#settings">
                 <h2>Settings</h2>
@@ -128,11 +130,17 @@
             <div id="usage-import-result" class="section"></div>
           </section>
 
+          <section id="page-command-centre" class="page hidden">
+            <h2 class="page-heading">Sales Command Centre</h2>
+            <p class="lede">A commercial decision queue above Zoho. Nothing is written to CRM. Portal Genie and Nagging Panda stay independent.</p>
+            <p id="cc-status" class="status-note"></p>
+            <div id="cc-root"></div>
+          </section>
+
           <section id="page-pipeline" class="page hidden">
             <h2 class="page-heading">Pipeline Intelligence</h2>
             <div class="card callout">
-              <span class="pill">Not built yet</span>
-              <p>This section is a placeholder. The Sales Engine does not rank a pipeline, write to Zoho, or automate outreach from this screen.</p>
+              <p>Portfolio ranking now lives in <a href="#command-centre">Command Centre</a>. This page is not a CRM dashboard.</p>
             </div>
           </section>
 

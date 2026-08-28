@@ -168,6 +168,9 @@ function createFakeClient(overrides: Partial<ZohoCrmReader> = {}): ZohoCrmReader
     async getOrg() {
       return ok({ org: [{ company_name: "Portal Genie", domain_name: "example" }] });
     },
+    async getRecords() {
+      return empty();
+    },
   };
 
   return { ...base, ...overrides };

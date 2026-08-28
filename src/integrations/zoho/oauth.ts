@@ -47,6 +47,7 @@ function parseTokenResponse(json: unknown): {
 
 export class ZohoOAuth {
   private cache: TokenCache | null = null;
+  private refreshInFlight: Promise<TokenCache> | null = null;
 
   constructor(
     private readonly env: ZohoEnv,
@@ -131,11 +132,22 @@ export class ZohoOAuth {
     if (this.cache && this.cache.expiresAt - TOKEN_EXPIRY_SKEW_MS > Date.now()) {
       return this.cache;
     }
-    await this.refreshAccessToken();
-    if (!this.cache) {
-      throw new ZohoAuthError("Failed to cache access token after refresh");
+    if (!this.refreshInFlight) {
+      this.refreshInFlight = this.refreshAndCache();
     }
-    return this.cache;
+    return this.refreshInFlight;
+  }
+
+  private async refreshAndCache(): Promise<TokenCache> {
+    try {
+      await this.refreshAccessToken();
+      if (!this.cache) {
+        throw new ZohoAuthError("Failed to cache access token after refresh");
+      }
+      return this.cache;
+    } finally {
+      this.refreshInFlight = null;
+    }
   }
 
   private remember(token: TokenSet): void {

@@ -1,0 +1,9 @@
+{
+  "timeZone": "Africa/Johannesburg",
+  "quietDaysWatch": 21,
+  "quietDaysStalled": 45,
+  "unansweredAttemptsForStall": 2,
+  "maxRecordsPerModule": 200,
+  "analyseConcurrency": 2,
+  "notes": "Interim V1 Command Centre thresholds. Recalibrate against paying conversion. quietDaysStalled is not a score; an old deal alone is not stalled."
+}

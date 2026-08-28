@@ -15,6 +15,7 @@ import { normalizeUsageRecords, rowsToRawRecords } from "../ingestion/usage/norm
 import { combineAccountIntelligence } from "../domain/account-intelligence.js";
 import { loadUsageImportMeta, usageImportIsNewerThan } from "../intelligence/usage-match.js";
 import { loadActivationThresholds } from "../config/activation-thresholds.js";
+import { loadCommandCentreSnapshot, scanSalesCommandCentre, buildSalesCommandCentre } from "../services/command-centre-runtime.js";
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL("../web/public", import.meta.url)));
 const MIME: Record<string, string> = {
@@ -349,6 +350,43 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         }
         return;
       }
+    }
+
+    if (method === "GET" && url.pathname === "/api/command-centre/snapshot") {
+      const loaded = loadCommandCentreSnapshot();
+      send(res, 200, {
+        snapshot: loaded.snapshot,
+        lastScan: loaded.lastScan,
+        openaiTriggered: false,
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/command-centre/scan") {
+      const body = await readJson(req);
+      const maxOrganisations = typeof body.maxOrganisations === "number" ? body.maxOrganisations : undefined;
+      send(res, 200, { ...await scanSalesCommandCentre({ maxOrganisations }), openaiTriggered: false });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/command-centre/build") {
+      const body = await readJson(req);
+      if (body.confirm !== true) {
+        send(res, 400, { error: "Build Command Centre requires confirm=true. This may call OpenAI." });
+        return;
+      }
+      const mode = body.mode === "full_rebuild" || body.mode === "selected" ? body.mode : "build_changed";
+      const snapshot = await buildSalesCommandCentre({
+        mode,
+        confirm: true,
+        maxOrganisations: typeof body.maxOrganisations === "number" ? body.maxOrganisations : undefined,
+        organisationIds: Array.isArray(body.organisationIds)
+          ? body.organisationIds.filter((item): item is string => typeof item === "string")
+          : undefined,
+        includeBriefSynthesis: body.includeBriefSynthesis !== false,
+      });
+      send(res, 200, { snapshot, openaiTriggered: snapshot.tokens.openai_calls > 0 });
+      return;
     }
 
     send(res, 404, { error: "Not found" });

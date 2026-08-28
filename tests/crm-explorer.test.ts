@@ -43,6 +43,7 @@ function fakeSearchClient(): ZohoCrmReader {
     async getEmail() { return empty(); },
     async getTags() { return empty(); },
     async getOrg() { return ok({ org: [{ company_name: "Test Org" }] }); },
+    async getRecords() { return empty(); },
   };
 }
 

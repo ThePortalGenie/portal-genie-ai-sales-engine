@@ -59,3 +59,28 @@ test("authorizationUrl does not include the client secret", () => {
   assert.doesNotMatch(url, /secret/);
   assert.match(url, /state=state-1/);
 });
+
+test("concurrent getAccessToken refreshes once", async () => {
+  let posts = 0;
+  const oauth = new ZohoOAuth(
+    env,
+    createLogger({ level: "error" }),
+    (async () => {
+      posts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return new Response(
+        JSON.stringify({
+          access_token: "access",
+          api_domain: "https://www.zohoapis.eu",
+          token_type: "Bearer",
+          expires_in: 3600,
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch,
+  );
+  const [left, right] = await Promise.all([oauth.getAccessToken(), oauth.getAccessToken()]);
+  assert.equal(left, "access");
+  assert.equal(right, "access");
+  assert.equal(posts, 1);
+});

@@ -370,6 +370,7 @@ test("explicit re-analysis includes updated usage", async () => {
       async getTags() { return { ok: true, status: 204, noContent: true, json: null }; },
       async searchByWord() { return { ok: true, status: 200, noContent: false, json: { data: [] } }; },
       async getOrg() { return { ok: true, status: 204, noContent: true, json: null }; },
+      async getRecords() { return { ok: true, status: 204, noContent: true, json: null }; },
     },
     model: "gpt-5.6",
     usageProfiles: [profile!],

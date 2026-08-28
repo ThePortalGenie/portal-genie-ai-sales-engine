@@ -444,6 +444,7 @@ test("OpenAI context includes operator events and named unanswered metrics", asy
       async getTags() { return emptyResult(); },
       async searchByWord() { return emptyResult(); },
       async getOrg() { return emptyResult(); },
+      async getRecords() { return emptyResult(); },
     };
     const diagnostic = {
       generatedAt: "2026-08-27T10:00:00Z",

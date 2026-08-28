@@ -27,6 +27,8 @@ test("GET / serves the CRM Explorer HTML without secrets", async () => {
     assert.match(html, /Settings/);
     assert.match(html, /Usage Intelligence/);
     assert.match(html, /Pipeline Intelligence/);
+    assert.match(html, /Command Centre/);
+    assert.match(html, /Sales Command Centre/);
     assert.match(html, /The Portal Genie/);
     assert.doesNotMatch(html, /ZOHO_CLIENT_SECRET|refresh_token|access_token/i);
   });
@@ -76,6 +78,20 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /Portal visits = visits by the subscriber's clients/);
     assert.match(js, /USAGE DATA UPDATED — ANALYSIS MAY BE STALE/);
     assert.match(js, /Portal Genie usage/);
+    assert.match(js, /No Sales Command Centre snapshot yet/);
+    assert.match(js, /Scan CRM/);
+    assert.match(js, /appendKv\(card, "When"/);
+    assert.match(js, /el\("article", \{ class: "cc-item"/);
+    assert.match(js, /\/api\/command-centre\/snapshot/);
+    assert.match(js, /confirm: true/);
+    assert.match(js, /maxOrganisations: 5/);
+    assert.match(js, /full_rebuild/);
+    assert.match(js, /async function loadCommandCentre/);
+    assert.match(js, /ccSnapshot = null/);
+    assert.match(js, /\/not found\/i.test\(message\)/);
+    assert.match(js, /async function runCcScan/);
+    assert.doesNotMatch(js, /async function loadCommandCentre[\s\S]{0,400}\/api\/intelligence\/analyse/);
+    assert.doesNotMatch(js, /async function runCcScan[\s\S]{0,500}\/api\/intelligence\/analyse/);
   });
 });
 
@@ -86,6 +102,8 @@ test("GET /assets/app.css lets the workspace scroll past the analysis hero", asy
     assert.equal(response.status, 200);
     assert.match(css, /\.app-shell\s*\{[^}]*overflow:\s*hidden/s);
     assert.match(css, /\.workspace\s*\{[^}]*overflow:\s*auto/s);
+    assert.match(css, /\.cc-queue/);
+    assert.match(css, /\.cc-item\s*\{[^}]*color:\s*var\(--ink\)/s);
     assert.doesNotMatch(css, /\.workspace\s*\{[^}]*display:\s*flex/s);
   });
 });

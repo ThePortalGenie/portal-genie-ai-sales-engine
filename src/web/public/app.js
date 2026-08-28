@@ -1,16 +1,17 @@
 const $ = (id) => document.getElementById(id);
 
 const PAGE_CONTEXT = {
+  "command-centre": { kicker: "Daily queue", title: "Sales Command Centre" },
   overview: { kicker: "Mission control", title: "Overview" },
   explorer: { kicker: "Workspace", title: "CRM Explorer" },
   usage: { kicker: "Product evidence", title: "Usage Intelligence" },
-  pipeline: { kicker: "Coming later", title: "Pipeline Intelligence" },
+  pipeline: { kicker: "Redirect", title: "Pipeline Intelligence" },
   settings: { kicker: "Connections", title: "Settings" },
 };
 
 function showPage() {
-  const hash = (location.hash || "#overview").replace("#", "").split("?")[0];
-  const page = PAGE_CONTEXT[hash] ? hash : "overview";
+  const hash = (location.hash || "#command-centre").replace("#", "").split("?")[0];
+  const page = PAGE_CONTEXT[hash] ? hash : "command-centre";
   for (const id of Object.keys(PAGE_CONTEXT)) {
     const node = $(`page-${id}`);
     if (node) node.classList.toggle("hidden", id !== page);
@@ -24,6 +25,7 @@ function showPage() {
   }
   $("sidebar")?.classList.remove("open");
   $("nav-toggle")?.setAttribute("aria-expanded", "false");
+  if (page === "command-centre") loadCommandCentre();
 }
 
 function relationshipOpen() {
@@ -79,7 +81,14 @@ function formatWhen(value) {
 
 function formatDay(value) {
   if (!value) return "Undated";
-  const date = new Date(value.length === 10 ? `${value}T00:00:00Z` : value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(year, month - 1, day);
+    const today = new Date();
+    if (date.toDateString() === today.toDateString()) return "Today";
+    return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  }
+  const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   const today = new Date();
   if (date.toDateString() === today.toDateString()) return "Today";
@@ -206,6 +215,11 @@ function kv(label, value) {
   const wrap = el("div", { class: "kv" });
   wrap.append(el("div", { class: "muted", text: label }), el("div", { text: value }));
   return wrap;
+}
+
+function appendKv(parent, label, value) {
+  if (value == null || String(value).trim() === "") return;
+  parent.append(kv(label, value));
 }
 
 function stat(label, value) {
@@ -1347,6 +1361,215 @@ $("nav-toggle")?.addEventListener("click", () => {
   $("sidebar").classList.toggle("open", open);
   $("nav-toggle").setAttribute("aria-expanded", String(open));
 });
+
+let ccFilter = "ALL";
+let ccScan = null;
+let ccSnapshot = null;
+
+function ccMatches(item, filter) {
+  if (filter === "ALL") return true;
+  if (filter === "PORTAL_GENIE" || filter === "NAGGING_PANDA") return item.product_scope === filter;
+  if (filter === "ACTION_TODAY") return (item.priority === "P0" || item.priority === "P1") && item.executability === "EXECUTABLE_NOW";
+  if (filter === "STALLED") return item.stalled_state === "STALLED" || item.stalled_state === "WATCH";
+  if (filter === "WAITING") return item.priority === "P4" || item.next_best_action === "WAIT";
+  if (filter === "WATCH") return item.stalled_state === "WATCH";
+  if (filter === "NO_ACTION") return item.priority === "P5" || item.next_best_action === "NO_ACTION";
+  return true;
+}
+
+function whenLabel(item) {
+  if (item.action_timing === "WAIT_UNTIL" && item.action_due_at) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(item.action_due_at)) return `WAIT UNTIL ${formatDay(item.action_due_at)}`;
+    return `WAIT UNTIL ${formatWhen(item.action_due_at)}`;
+  }
+  if (item.executability === "DATA_REQUIRED") return "USAGE DATA REQUIRED";
+  if (item.action_timing === "OVERDUE") return "OVERDUE";
+  if (item.action_timing === "TODAY") return "TODAY";
+  if (item.executability === "WAITING_FOR_CUSTOMER" || item.stalled_state === "WAITING_ON_CUSTOMER") return "AWAITING CUSTOMER";
+  if (item.next_best_action === "NO_ACTION" || item.action_timing === "NO_ACTION_REQUIRED") return "NO ACTION TODAY";
+  return words(item.action_timing);
+}
+
+function renderCommandCentre() {
+  const root = $("cc-root");
+  const status = $("cc-status");
+  if (!root) return;
+  root.replaceChildren();
+  const snapshot = ccSnapshot;
+  if (!snapshot) {
+    status.textContent = "No Sales Command Centre snapshot yet. Scan CRM first. Scanning does not call OpenAI.";
+    const empty = el("div", { class: "card callout" });
+    empty.append(el("h3", { text: "No Sales Command Centre snapshot yet." }));
+    empty.append(el("p", { text: "Scan discovers organisations and estimates reuse. It does not analyse the book or call OpenAI." }));
+    const scanBtn = el("button", { type: "button", text: "Scan CRM" });
+    scanBtn.addEventListener("click", () => runCcScan());
+    empty.append(scanBtn);
+    root.append(empty);
+    if (ccScan) root.append(renderCcScan(ccScan, true));
+    return;
+  }
+  status.textContent = `Last intelligence refresh ${formatWhen(snapshot.generated_at)}. ${snapshot.tokens?.openai_calls ?? 0} OpenAI call(s) · ${snapshot.tokens?.total_tokens || 0} tokens · ${snapshot.duration_ms} ms. Nothing was written to Zoho.`;
+  const kpis = el("div", { class: "snapshot" });
+  kpis.append(
+    stat("Needs action today", String(snapshot.needs_action_today ?? 0)),
+    stat("Stalled", String(snapshot.stalled_count ?? 0)),
+    stat("Waiting / do not chase", String(snapshot.waiting_count ?? 0)),
+    stat("Active opportunities", String(snapshot.active_opportunities ?? 0)),
+    stat("Analysis warnings", String((snapshot.failures || []).length)),
+  );
+  root.append(kpis);
+
+  const actions = el("div", { class: "row cc-actions" });
+  const check = el("button", { type: "button", class: "secondary", text: "Check for changes" });
+  check.addEventListener("click", () => runCcScan());
+  const refresh = el("button", { type: "button", text: "Refresh changed items" });
+  refresh.addEventListener("click", () => runCcBuild("build_changed"));
+  const full = el("button", { type: "button", class: "secondary", text: "Full rebuild" });
+  full.addEventListener("click", () => {
+    if (confirm("Full rebuild may require many OpenAI calls. Continue?")) runCcBuild("full_rebuild");
+  });
+  actions.append(check, refresh, full);
+  root.append(actions);
+  if (snapshot.truncated_reason) root.append(el("p", { class: "warn-text", text: snapshot.truncated_reason }));
+  if (ccScan) root.append(renderCcScan(ccScan, false));
+
+  const brief = snapshot.brief;
+  if (brief) {
+    const card = el("section", { class: "section" }, [el("h2", { text: "Daily sales brief" })]);
+    card.append(el("p", { text: brief.today_at_a_glance }));
+    if (brief.narrative) card.append(el("p", { text: brief.narrative }));
+    if (brief.do_first?.length) card.append(listBlock("Do first", brief.do_first));
+    if (brief.follow_up_today?.length) card.append(listBlock("Follow up today", brief.follow_up_today));
+    if (brief.stalled?.length) card.append(listBlock("Stalled / needs intervention", brief.stalled));
+    if (brief.wait?.length) card.append(listBlock("Wait — do not chase", brief.wait));
+    if (brief.reengage?.length) card.append(listBlock("Opportunities worth re-engaging", brief.reengage));
+    if (brief.warnings?.length) card.append(listBlock("Data / analysis warnings", brief.warnings));
+    root.append(card);
+  }
+
+  const filters = el("div", { class: "badge-row cc-filters" });
+  for (const filter of ["ALL", "PORTAL_GENIE", "NAGGING_PANDA", "ACTION_TODAY", "STALLED", "WAITING", "WATCH", "NO_ACTION"]) {
+    const btn = el("button", { type: "button", class: `secondary${ccFilter === filter ? " active-filter" : ""}`, text: words(filter) });
+    btn.addEventListener("click", () => { ccFilter = filter; renderCommandCentre(); });
+    filters.append(btn);
+  }
+  root.append(filters);
+
+  const items = (snapshot.watch_items || []).filter((item) => ccMatches(item, ccFilter));
+  if (!items.length) {
+    root.append(el("p", { class: "muted", text: "Nothing in this filter. Waiting / future-dated items stay out of the action queue on purpose." }));
+    return;
+  }
+  const list = el("div", { class: "cc-queue" });
+  for (const item of items) {
+    const card = el("article", { class: "cc-item", tabindex: "0", role: "link" });
+    card.append(el("div", { class: "badge-row" }, [
+      el("span", { class: "pill", text: item.priority }),
+      el("span", { class: "pill", text: words(item.product_scope) }),
+      el("span", { class: "pill", text: words(item.stalled_state) }),
+    ]));
+    card.append(el("strong", { text: item.organisation_name || "UNKNOWN" }));
+    if (item.commercial_summary) card.append(el("p", { class: "cc-situation", text: item.commercial_summary }));
+    if (item.recommended_contact_name) {
+      appendKv(card, "Recommended contact", item.recommended_contact_name);
+      if (item.recommended_contact_reason) appendKv(card, "Contact reason", item.recommended_contact_reason);
+    } else if (item.next_best_action !== "NO_ACTION") {
+      appendKv(card, "Recommended contact", "UNKNOWN");
+    }
+    appendKv(card, "Next action", words(item.next_best_action));
+    appendKv(card, "When", whenLabel(item));
+    appendKv(card, "Why", item.why_this_action);
+    appendKv(card, "Confidence", item.confidence);
+    if (item.stalled_reasons?.length && (item.stalled_state === "STALLED" || item.stalled_state === "WATCH" || item.stalled_state === "INSUFFICIENT_EVIDENCE" || item.stalled_state === "WAITING_ON_CUSTOMER" || item.stalled_state === "WAITING_ON_US")) {
+      appendKv(card, "Stalled reason", item.stalled_reasons.join(" "));
+    }
+    const open = () => {
+      if (!item.source_record?.module || !item.source_record?.recordId) return;
+      location.hash = "explorer";
+      openRelationship(item.source_record.module, item.source_record.recordId);
+    };
+    card.addEventListener("click", open);
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        open();
+      }
+    });
+    list.append(card);
+  }
+  root.append(list);
+}
+
+function renderCcScan(scan, allowBuild) {
+  const card = el("div", { class: "card callout" });
+  card.append(el("h3", { text: "Scan estimate" }));
+  const universe = scan.universe_size && scan.universe_size !== scan.organisations_discovered
+    ? `${scan.organisations_discovered} of ${scan.universe_size}`
+    : String(scan.organisations_discovered);
+  card.append(el("p", { text: `${universe} organisations discovered. ${scan.analyses_reusable} analyses can be reused. ${scan.analyses_require_refresh} require refresh.` }));
+  card.append(el("p", { class: "muted", text: `OpenAI would be called for ${scan.openai_would_be_called} organisation(s). Scan itself used 0 OpenAI calls.` }));
+  if (scan.truncated_reason) card.append(el("p", { class: "warn-text", text: scan.truncated_reason }));
+  for (const warning of scan.retrieval_warnings || []) card.append(el("p", { class: "warn-text", text: warning }));
+  if (scan.organisations?.length) {
+    const reuseNotes = scan.organisations
+      .filter((item) => item.reuse_reason)
+      .slice(0, 8)
+      .map((item) => `${item.organisation_name}: ${item.reuse} — ${item.reuse_reason}`);
+    if (reuseNotes.length) card.append(listBlock("Why reuse or refresh", reuseNotes));
+  }
+  if (allowBuild) {
+    const build = el("button", { type: "button", text: "Build Command Centre" });
+    build.addEventListener("click", () => runCcBuild("build_changed"));
+    card.append(build);
+  }
+  return card;
+}
+
+async function loadCommandCentre() {
+  const status = $("cc-status");
+  try {
+    const data = await api("/api/command-centre/snapshot");
+    ccSnapshot = data.snapshot || null;
+    ccScan = data.lastScan || ccScan;
+    renderCommandCentre();
+  } catch (error) {
+    ccSnapshot = null;
+    renderCommandCentre();
+    const message = operatorMessage(error);
+    if (status && !/not found/i.test(message)) status.textContent = message;
+  }
+}
+
+async function runCcScan() {
+  const status = $("cc-status");
+  status.textContent = "Scanning CRM… OpenAI is not called.";
+  try {
+    ccScan = await api("/api/command-centre/scan", { method: "POST", body: JSON.stringify({ maxOrganisations: 5 }) });
+    renderCommandCentre();
+    status.textContent = ccScan.truncated_reason
+      ? `Scan complete. ${ccScan.truncated_reason} OpenAI was not called.`
+      : `Scan complete. ${ccScan.organisations_discovered} organisations. OpenAI was not called.`;
+  } catch (error) {
+    status.textContent = operatorMessage(error);
+  }
+}
+
+async function runCcBuild(mode) {
+  const status = $("cc-status");
+  status.textContent = mode === "full_rebuild"
+    ? "Full rebuild in progress. This may call OpenAI."
+    : "Building Command Centre for changed items…";
+  try {
+    const data = await api("/api/command-centre/build", {
+      method: "POST",
+      body: JSON.stringify({ mode, confirm: true, maxOrganisations: 5, includeBriefSynthesis: true }),
+    });
+    ccSnapshot = data.snapshot;
+    renderCommandCentre();
+  } catch (error) {
+    status.textContent = operatorMessage(error);
+  }
+}
 
 window.addEventListener("hashchange", showPage);
 showPage();

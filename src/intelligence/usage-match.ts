@@ -22,25 +22,34 @@ export type UsageImportMeta = {
   importedAt?: string;
   source?: string;
   rowCount: number;
+  matchedCount: number;
 };
 
 export function loadUsageImportMeta(cwd = process.cwd()): UsageImportMeta {
   const filePath = resolve(cwd, "diagnostics/usage-import.json");
-  if (!existsSync(filePath)) return { rowCount: 0 };
+  if (!existsSync(filePath)) return { rowCount: 0, matchedCount: 0 };
   try {
     const parsed = JSON.parse(readFileSync(filePath, "utf8")) as {
       importedAt?: string;
       source?: string;
-      counts?: { rows?: number; accepted?: number };
+      counts?: { rows?: number; accepted?: number; matched?: number };
     };
     return {
       importedAt: parsed.importedAt,
       source: parsed.source,
       rowCount: parsed.counts?.accepted ?? parsed.counts?.rows ?? 0,
+      matchedCount: parsed.counts?.matched ?? 0,
     };
   } catch {
-    return { rowCount: 0 };
+    return { rowCount: 0, matchedCount: 0 };
   }
+}
+
+/** Template CSVs and unmatched-only imports are not an operational usage source. */
+export function usageImportIsOperational(meta: UsageImportMeta = loadUsageImportMeta()): boolean {
+  if (meta.rowCount <= 0) return false;
+  if (meta.source && /template/i.test(meta.source)) return false;
+  return true;
 }
 
 export function loadImportedUsageProfiles(cwd = process.cwd()): NormalizedUsageProfile[] {

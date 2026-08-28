@@ -45,6 +45,7 @@ export function createRequestCachedClient(client: ZohoCrmReader): { client: Zoho
       getTags: cached("getTags", client.getTags.bind(client)),
       searchByWord: cached("searchByWord", client.searchByWord.bind(client)),
       getOrg: cached("getOrg", client.getOrg.bind(client)),
+      getRecords: cached("getRecords", client.getRecords.bind(client)),
     },
   };
 }
