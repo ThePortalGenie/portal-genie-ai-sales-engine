@@ -4,8 +4,17 @@ import { extname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { fileURLToPath } from "node:url";
 import { loadCommercialProfile, openaiStatus, recordOperatorFeedback, runCommercialAnalysis } from "../services/intelligence-runtime.js";
 import { zohoRuntime } from "../services/zoho-runtime.js";
+import { m365Runtime } from "../services/m365-runtime.js";
 import { SalesEventValidationError } from "../domain/sales-event.js";
 import { createSalesEvent, deleteSalesEvent, listSalesEvents, updateSalesEvent } from "../intelligence/sales-event-store.js";
+import { OperatorDecisionValidationError } from "../domain/operator-decision.js";
+import {
+  createOperatorDecision,
+  getOperatorDecision,
+  listOperatorDecisions,
+  revokeOperatorDecision,
+  supersedeOperatorDecision,
+} from "../intelligence/operator-decision-store.js";
 import { buildRelationshipView } from "../web/relationship-view.js";
 import { usageOverlayForDiagnostic } from "../web/usage-overlay.js";
 import { publicErrorMessage, redactSecrets } from "../security/redact.js";
@@ -15,7 +24,7 @@ import { normalizeUsageRecords, rowsToRawRecords } from "../ingestion/usage/norm
 import { combineAccountIntelligence } from "../domain/account-intelligence.js";
 import { loadUsageImportMeta, usageImportIsNewerThan } from "../intelligence/usage-match.js";
 import { loadActivationThresholds } from "../config/activation-thresholds.js";
-import { loadCommandCentreSnapshot, scanSalesCommandCentre, buildSalesCommandCentre } from "../services/command-centre-runtime.js";
+import { loadCommandCentreSnapshot, scanSalesCommandCentre, buildSalesCommandCentre, refreshSalesCommandCentreControl } from "../services/command-centre-runtime.js";
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL("../web/public", import.meta.url)));
 const MIME: Record<string, string> = {
@@ -148,6 +157,73 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         res.end();
       } catch {
         res.writeHead(302, { Location: "/#settings?oauth=error", "Cache-Control": "no-store" });
+        res.end();
+      }
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/m365/status") {
+      send(res, 200, await m365Runtime.connectionStatus());
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/m365/diagnostics") {
+      send(res, 200, m365Runtime.diagnosticsView());
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/m365/test") {
+      const body = await readJson(req);
+      const connectionId = typeof body.connectionId === "string" ? body.connectionId.trim() : "";
+      if (!connectionId) {
+        send(res, 400, { error: "connectionId is required" });
+        return;
+      }
+      send(res, 200, await m365Runtime.testConnection(connectionId));
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/m365/sync") {
+      const body = await readJson(req);
+      const connectionId = typeof body.connectionId === "string" ? body.connectionId.trim() : "";
+      if (!connectionId) {
+        send(res, 400, { error: "connectionId is required" });
+        return;
+      }
+      send(res, 200, await m365Runtime.syncMailbox(connectionId));
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/m365/oauth/start") {
+      const connectionId = url.searchParams.get("connection_id") ?? "";
+      if (!connectionId) {
+        send(res, 400, { error: "connection_id is required" });
+        return;
+      }
+      try {
+        res.writeHead(302, { Location: m365Runtime.oauthStartUrl(connectionId), "Cache-Control": "no-store" });
+        res.end();
+      } catch (error) {
+        send(res, 400, { error: publicErrorMessage(error) });
+      }
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/m365/oauth/callback") {
+      const state = url.searchParams.get("state") ?? "";
+      const code = url.searchParams.get("code") ?? "";
+      const connectionId = m365Runtime.consumeOAuthState(state);
+      if (!connectionId || !code) {
+        res.writeHead(302, { Location: "/#settings?m365=error", "Cache-Control": "no-store" });
+        res.end();
+        return;
+      }
+      try {
+        await m365Runtime.connectWithAuthorizationCode(connectionId, code);
+        res.writeHead(302, { Location: "/#settings?m365=connected", "Cache-Control": "no-store" });
+        res.end();
+      } catch {
+        res.writeHead(302, { Location: "/#settings?m365=error", "Cache-Control": "no-store" });
         res.end();
       }
       return;
@@ -352,6 +428,89 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       }
     }
 
+    if (method === "GET" && url.pathname === "/api/operator-decisions") {
+      const organisationKey = queryOf(url).organisation_key?.trim();
+      const productScope = queryOf(url).product_scope?.trim();
+      const watchItemId = queryOf(url).watch_item_id?.trim();
+      const activeOnly = queryOf(url).active_only === "true";
+      let decisions = listOperatorDecisions({
+        organisation_key: organisationKey || undefined,
+        product_scope:
+          productScope === "PORTAL_GENIE" || productScope === "NAGGING_PANDA" ? productScope : undefined,
+        watch_item_id: watchItemId || undefined,
+        include_superseded: !activeOnly,
+      });
+      if (activeOnly) {
+        const asOf = new Date().toISOString();
+        decisions = decisions.filter((decision) => {
+          if (decision.decision_type === "REVOKED") return false;
+          if (decision.effective_until && Date.parse(asOf) >= Date.parse(decision.effective_until)) return false;
+          return true;
+        });
+      }
+      send(res, 200, { decisions: redactSecrets(decisions), openaiTriggered: false, writtenToZoho: false });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/operator-decisions") {
+      const body = await readJson(req);
+      try {
+        const decision = createOperatorDecision(body);
+        send(res, 201, { decision: redactSecrets(decision), openaiTriggered: false, writtenToZoho: false });
+      } catch (error) {
+        if (error instanceof OperatorDecisionValidationError) {
+          send(res, 400, { error: error.message });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    const operatorDecisionMatch = url.pathname.match(/^\/api\/operator-decisions\/([^/]+)(?:\/(supersede|revoke))?$/);
+    if (operatorDecisionMatch) {
+      const decisionId = decodeURIComponent(operatorDecisionMatch[1] ?? "");
+      const action = operatorDecisionMatch[2];
+      if (method === "GET" && !action) {
+        const decision = getOperatorDecision(decisionId);
+        if (!decision) {
+          send(res, 404, { error: "Operator decision not found." });
+          return;
+        }
+        send(res, 200, { decision: redactSecrets(decision), openaiTriggered: false, writtenToZoho: false });
+        return;
+      }
+      if (method === "POST" && action === "supersede") {
+        const body = await readJson(req);
+        try {
+          const decision = supersedeOperatorDecision(decisionId, body);
+          send(res, 200, { decision: redactSecrets(decision), openaiTriggered: false, writtenToZoho: false });
+        } catch (error) {
+          if (error instanceof OperatorDecisionValidationError) {
+            send(res, 400, { error: error.message });
+            return;
+          }
+          throw error;
+        }
+        return;
+      }
+      if (method === "POST" && action === "revoke") {
+        const body = await readJson(req);
+        const note = typeof body.operator_note === "string" ? body.operator_note : undefined;
+        try {
+          const decision = revokeOperatorDecision(decisionId, note);
+          send(res, 200, { decision: redactSecrets(decision), openaiTriggered: false, writtenToZoho: false });
+        } catch (error) {
+          if (error instanceof OperatorDecisionValidationError) {
+            send(res, 400, { error: error.message });
+            return;
+          }
+          throw error;
+        }
+        return;
+      }
+    }
+
     if (method === "GET" && url.pathname === "/api/command-centre/snapshot") {
       const loaded = loadCommandCentreSnapshot();
       send(res, 200, {
@@ -386,6 +545,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         includeBriefSynthesis: body.includeBriefSynthesis !== false,
       });
       send(res, 200, { snapshot, openaiTriggered: snapshot.tokens.openai_calls > 0 });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/command-centre/refresh-control") {
+      send(res, 200, refreshSalesCommandCentreControl());
       return;
     }
 

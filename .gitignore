@@ -5,6 +5,8 @@ dist/
 *.log
 diagnostics/*.json
 diagnostics/intelligence/
+diagnostics/m365/
+!diagnostics/m365/.gitkeep
 !diagnostics/.gitkeep
 !diagnostics/.gitkeep
 data/*.csv

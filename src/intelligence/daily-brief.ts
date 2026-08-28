@@ -8,18 +8,14 @@ import type {
 } from "../domain/commercial-watch.js";
 import { classifyInstant } from "./calendar-date.js";
 import { DEFAULT_COMMAND_CENTRE_THRESHOLDS } from "../domain/commercial-watch.js";
+import { isEffectivelyCustomerExecutable } from "./watch-item-control.js";
 
 function isExecutableNow(item: CommercialWatchItem): boolean {
   return item.executability === "EXECUTABLE_NOW";
 }
 
 export function isCustomerExecutableBriefItem(item: CommercialWatchItem): boolean {
-  return (
-    (item.priority === "P0" || item.priority === "P1") &&
-    isExecutableNow(item) &&
-    item.actionability_kind === "CUSTOMER_ACTION" &&
-    item.customer_queue
-  );
+  return isEffectivelyCustomerExecutable(item);
 }
 
 function shortReason(text: string, max = 140): string {
@@ -95,6 +91,45 @@ function waitRow(item: CommercialWatchItem, asOf: string, timeZone: string): Dai
   };
 }
 
+function operatorResearchRow(item: CommercialWatchItem): DailyBriefResearchRow {
+  const reason =
+    item.operator_control?.operator_summary ||
+    item.operator_control?.suppression_reason ||
+    item.why_this_action;
+  return {
+    watch_item_id: item.id,
+    organisation_id: item.organisation_id,
+    organisation_name: item.organisation_name,
+    product_scope: item.product_scope,
+    next_best_action: item.next_best_action,
+    actionability_kind:
+      item.operator_control?.primary_decision_type === "RESEARCH_REQUIRED" ||
+      item.effective_queue_state === "RESEARCH"
+        ? "INTERNAL_RESEARCH"
+        : "DATA_REQUIRED",
+    reason: shortReason(reason || "Operator review required before customer outreach."),
+  };
+}
+
+function operatorWaitRow(item: CommercialWatchItem): DailyBriefWaitRow {
+  const when =
+    item.operator_control?.effective_until?.slice(0, 10) ??
+    (item.action_due_at ? whenLabel(item, "", DEFAULT_COMMAND_CENTRE_THRESHOLDS.timeZone) : undefined);
+  return {
+    watch_item_id: item.id,
+    organisation_id: item.organisation_id,
+    organisation_name: item.organisation_name,
+    wait_kind:
+      item.operator_control?.primary_decision_type === "WAITING" ? "WAITING_ON_CUSTOMER" : "WAIT_UNTIL",
+    when_label: when ? `WAIT UNTIL ${when}` : undefined,
+    reason: shortReason(
+      item.operator_control?.operator_summary ||
+        item.operator_control?.suppression_reason ||
+        "Operator marked this as waiting.",
+    ),
+    time_sensitive: Boolean(item.operator_control?.effective_until),
+  };
+}
 function researchRow(item: CommercialWatchItem): DailyBriefResearchRow {
   return {
     watch_item_id: item.id,
@@ -137,6 +172,10 @@ export function deterministicCommercialWatch(
   if (warningsCount) {
     bullets.push(`${warningsCount} analysis warning(s) — verify data quality before acting on affected records.`);
   }
+  const reopened = items.filter((item) => item.operator_control?.reopened);
+  if (reopened.length) {
+    bullets.push(`${reopened.length} previously controlled item(s) reopened because material new evidence arrived.`);
+  }
   return bullets.slice(0, 5);
 }
 
@@ -149,13 +188,48 @@ export function deterministicDailyBrief(
   const customerExecutable = items.filter(isCustomerExecutableBriefItem);
   const p0 = customerExecutable.filter((item) => item.priority === "P0");
   const p1 = customerExecutable.filter((item) => item.priority === "P1");
-  const doFirstActions = [...p0, ...p1].map((item) => actionRow(item, asOf, timeZone));
-  const researchItems = items
-    .filter((item) => item.actionability_kind === "INTERNAL_RESEARCH" || item.actionability_kind === "DATA_REQUIRED")
-    .map(researchRow);
-  const stalled = items.filter((item) => item.stalled_state === "STALLED");
+  const doFirstActions = [...p0, ...p1].map((item) => {
+    const row = actionRow(item, asOf, timeZone);
+    if (item.operator_control?.reopened && item.operator_control.reopen_explanation) {
+      row.reason = shortReason(`${item.operator_control.reopen_explanation} ${row.reason}`);
+    }
+    return row;
+  });
+  const operatorResearch = items
+    .filter(
+      (item) =>
+        item.operator_control?.controlled &&
+        !isCustomerExecutableBriefItem(item) &&
+        (item.effective_queue_state === "RESEARCH" ||
+          item.effective_queue_state === "REVIEW_REQUIRED" ||
+          item.operator_control.primary_decision_type === "RESEARCH_REQUIRED"),
+    )
+    .map(operatorResearchRow);
+  const researchItems = [
+    ...items
+      .filter(
+        (item) =>
+          !item.operator_control?.controlled &&
+          (item.actionability_kind === "INTERNAL_RESEARCH" || item.actionability_kind === "DATA_REQUIRED"),
+      )
+      .map(researchRow),
+    ...operatorResearch,
+  ];
+  const stalled = items.filter(
+    (item) => item.stalled_state === "STALLED" && item.effective_queue_state !== "NOT_AN_OPPORTUNITY",
+  );
+  const operatorWaiting = items
+    .filter(
+      (item) =>
+        item.operator_control?.controlled &&
+        (item.operator_control.primary_decision_type === "WAITING" ||
+          item.operator_control.primary_decision_type === "SNOOZED"),
+    )
+    .map(operatorWaitRow);
   const waiting = items.filter(
     (item) =>
+      !item.operator_control?.controlled &&
+      item.effective_queue_state !== "NOT_AN_OPPORTUNITY" &&
       item.actionability_kind !== "INTERNAL_RESEARCH" &&
       item.actionability_kind !== "DATA_REQUIRED" &&
       (item.executability === "WAITING_FOR_TIME" ||
@@ -165,9 +239,9 @@ export function deterministicDailyBrief(
         item.stalled_state === "WAITING_ON_CUSTOMER" ||
         item.next_best_action === "WAIT"),
   );
-  const waitItems = waiting
-    .map((item) => waitRow(item, asOf, timeZone))
-    .sort((left, right) => Number(right.time_sensitive) - Number(left.time_sensitive));
+  const waitItems = [...waiting.map((item) => waitRow(item, asOf, timeZone)), ...operatorWaiting].sort(
+    (left, right) => Number(right.time_sensitive) - Number(left.time_sensitive),
+  );
   const watch = items.filter((item) => item.stalled_state === "WATCH");
   const dataRequired = items.filter((item) => item.executability === "DATA_REQUIRED");
   const waitCustomerCount = waiting.filter(

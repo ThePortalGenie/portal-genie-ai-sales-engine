@@ -1,0 +1,17 @@
+{
+  "mailboxes": [
+    {
+      "connection_id": "portal-genie-primary",
+      "product_scope": "PORTAL_GENIE",
+      "mailbox_email": "",
+      "display_name": "Portal Genie mailbox"
+    },
+    {
+      "connection_id": "nagging-panda-primary",
+      "product_scope": "NAGGING_PANDA",
+      "mailbox_email": "",
+      "display_name": "Nagging Panda mailbox"
+    }
+  ],
+  "notes": "Each connection_id maps to an independent OAuth token store. product_scope is operator-configured and is not inferred from message content."
+}

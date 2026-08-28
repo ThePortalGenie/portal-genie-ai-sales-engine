@@ -31,6 +31,7 @@ test("GET / serves the CRM Explorer HTML without secrets", async () => {
     assert.match(html, /Sales Command Centre/);
     assert.match(html, /The Portal Genie/);
     assert.doesNotMatch(html, /ZOHO_CLIENT_SECRET|refresh_token|access_token/i);
+    assert.match(html, /m365-connection-card/);
   });
 });
 
@@ -100,6 +101,24 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /async function runCcScan/);
     assert.doesNotMatch(js, /async function loadCommandCentre[\s\S]{0,400}\/api\/intelligence\/analyse/);
     assert.doesNotMatch(js, /async function runCcScan[\s\S]{0,500}\/api\/intelligence\/analyse/);
+    assert.match(js, /renderM365Connections/);
+    assert.match(js, /\/api\/m365\/status/);
+    assert.match(js, /Microsoft 365 mailboxes/);
+    assert.match(js, /cc-manage-btn/);
+    assert.match(js, /openManageDialog/);
+    assert.match(js, /decisionPayloadFromWatchItem/);
+    assert.match(js, /recommendation_fingerprint/);
+    assert.match(js, /evidence_snapshot_ref/);
+    assert.match(js, /Not an opportunity for:/);
+    assert.match(js, /This will NOT suppress/);
+    assert.match(js, /Save dismiss/);
+    assert.match(js, /Customer interaction/);
+    assert.match(js, /Internal \/ review only/);
+    assert.match(js, /linked_sales_event_id/);
+    assert.match(js, /operatorControlBadgeText/);
+    assert.match(js, /\/api\/command-centre\/refresh-control/);
+    assert.match(js, /Control history/);
+    assert.match(js, /Undo \/ Reopen/);
   });
 });
 
@@ -114,7 +133,21 @@ test("GET /assets/app.css lets the workspace scroll past the analysis hero", asy
     assert.match(css, /\.cc-brief-row/);
     assert.match(css, /\.cc-brief-watch/);
     assert.match(css, /\.cc-item\s*\{[^}]*color:\s*var\(--ink\)/s);
+    assert.match(css, /\.cc-manage-dialog/);
+    assert.match(css, /\.cc-operator-badge/);
     assert.doesNotMatch(css, /\.workspace\s*\{[^}]*display:\s*flex/s);
+  });
+});
+
+test("GET /api/m365/status does not expose secrets", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/m365/status`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.readOnly, true);
+    assert.doesNotMatch(JSON.stringify(body), /refresh_token|access_token|client_secret/i);
+    assert.match((body.scopes ?? []).join(" "), /Mail\.Read/);
+    assert.doesNotMatch((body.scopes ?? []).join(" "), /Mail\.Send/);
   });
 });
 

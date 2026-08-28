@@ -180,10 +180,52 @@ export type CommercialWatchItem = {
   analysis_generated_at?: string;
   source_analysis_id?: string;
   source_record: { module: string; recordId: string };
+  /** Deterministic recommendation fingerprint at build time (for operator decisions). */
+  recommendation_fingerprint?: string;
+  /** Cluster/analysis evidence fingerprint at build time. */
+  evidence_snapshot_ref?: string;
+  decision_context_snapshot?: {
+    deal_ids?: string[];
+    deal_stages?: Record<string, string>;
+    recommended_contact_id?: string;
+    next_best_action?: WatchAction;
+  };
+  /** Customer-queue eligibility before operator control. */
+  system_customer_queue?: boolean;
+  /** System-derived priority before operator control presentation. */
+  system_priority_band?: PriorityBand;
+  /** Effective queue bucket after operator control. */
+  effective_queue_state?: EffectiveQueueState;
+  operator_control?: WatchItemOperatorControl;
   priority: PriorityBand;
   rank: number;
   why_ranked: string;
   reuse: "reused" | "refreshed" | "failed" | "insufficient";
+};
+
+export const EFFECTIVE_QUEUE_STATES = [
+  "CUSTOMER_ACTION",
+  "WAIT",
+  "RESEARCH",
+  "REVIEW_REQUIRED",
+  "SUPPRESSED",
+  "NOT_AN_OPPORTUNITY",
+  "SYSTEM_NO_ACTION",
+] as const;
+export type EffectiveQueueState = (typeof EFFECTIVE_QUEUE_STATES)[number];
+
+export type WatchItemOperatorControl = {
+  controlled: boolean;
+  effect: "NONE" | "SUPPRESS_RECOMMENDATION" | "SUPPRESS_CUSTOMER_ACTION" | "SUPPRESS_PRODUCT_OPPORTUNITY" | "RESEARCH_ONLY";
+  actionable: boolean;
+  in_customer_action_queue: boolean;
+  suppression_reason?: string;
+  operator_summary?: string;
+  active_decision_ids?: string[];
+  primary_decision_type?: string;
+  effective_until?: string;
+  reopened?: boolean;
+  reopen_explanation?: string;
 };
 
 export type PortfolioFailure = {

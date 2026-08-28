@@ -25,6 +25,9 @@ export function publicErrorMessage(error: unknown): string {
   if (error && typeof error === "object" && "name" in error && error.name === "ZohoAuthError") {
     return "Zoho authentication failed. Check client credentials, data centre, and refresh token on the server.";
   }
+  if (error && typeof error === "object" && "name" in error && error.name === "M365AuthError") {
+    return "Microsoft 365 authentication failed. Check Entra app credentials and mailbox connection on the server.";
+  }
   if (error instanceof Error) {
     return error.message
       .replace(/1000\.[A-Za-z0-9.]+/g, "[redacted]")

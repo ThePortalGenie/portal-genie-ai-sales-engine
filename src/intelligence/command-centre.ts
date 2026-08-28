@@ -19,6 +19,10 @@ import { discoverUniverse } from "./universe-discovery.js";
 import { watchItemsFromAnalysis } from "./watch-from-analysis.js";
 import { sortWatchItems, PRIORITY_TIEBREAK } from "./priority-rank.js";
 import { deterministicDailyBrief, maybeSynthesizeBrief } from "./daily-brief.js";
+import {
+  decisionContextSnapshotFromWatchItem,
+  recommendationFingerprintFromWatchItem,
+} from "../domain/operator-decision.js";
 import { writeLastScan, writePortfolioSnapshot } from "./portfolio-store.js";
 import { usageImportIsNewerThan } from "./usage-match.js";
 import {
@@ -29,6 +33,11 @@ import {
 } from "./universe-select.js";
 import { isFirstPartyOrganisation } from "../config/first-party-domains.js";
 import { loadFirstPartyDomains } from "../config/first-party-domains.js";
+import {
+  applyOperatorControlToWatchItems,
+  isEffectivelyCustomerExecutable,
+  type WatchItemEvidenceContext,
+} from "./watch-item-control.js";
 
 export type AnalyseFn = (moduleName: string, recordId: string) => Promise<StoredAnalysis>;
 
@@ -226,9 +235,24 @@ export async function buildCommandCentre(
   let openaiCalls = 0;
 
   const firstPartyTracked: NonNullable<PortfolioSnapshot["first_party_organisations"]> = [];
+  const evidenceByOrganisation = new Map<string, WatchItemEvidenceContext>();
 
   const built = await mapLimit(clusters, thresholds.analyseConcurrency, async (cluster) => {
     const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
+    const dealStages = Object.fromEntries(
+      cluster.records
+        .filter((item) => item.module === "Deals" && item.stage)
+        .map((item) => [item.recordId, item.stage as string]),
+    );
+    evidenceByOrganisation.set(cluster.organisationId, {
+      evidence_fingerprint: fingerprint,
+      sales_events: listSalesEvents({
+        organisationIds: [cluster.organisationId],
+        contactIds: cluster.records.filter((item) => item.module !== "Deals").map((item) => item.recordId),
+      }),
+      deal_stages: dealStages,
+      retrieval_ok: cluster.records.every((item) => item.retrieval !== "ERROR" && item.retrieval !== "UNAVAILABLE"),
+    });
     const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
     const firstParty = isFirstPartyOrganisation(cluster, firstPartyDomains, deps.publicDomains);
     if (firstParty) {
@@ -292,7 +316,9 @@ export async function buildCommandCentre(
     });
   });
 
-  const items = sortWatchItems(built.flat());
+  const sorted = sortWatchItems(built.flat());
+  const enriched = enrichWatchItemsForOperatorControl(sorted, evidenceByOrganisation);
+  const items = applyOperatorControlToWatchItems(enriched, { asOf, evidenceByOrganisation });
   let brief = deterministicDailyBrief(items, failures, asOf);
   if (options.includeBriefSynthesis !== false && deps.synthesizer) {
     const synthesized = await maybeSynthesizeBrief(brief, deps.synthesizer);
@@ -319,13 +345,7 @@ export async function buildCommandCentre(
         item.priority === "P4" ||
         item.next_best_action === "WAIT",
     ).length,
-    needs_action_today: items.filter(
-      (item) =>
-        (item.priority === "P0" || item.priority === "P1") &&
-        item.executability === "EXECUTABLE_NOW" &&
-        item.actionability_kind === "CUSTOMER_ACTION" &&
-        item.customer_queue,
-    ).length,
+    needs_action_today: items.filter((item) => isEffectivelyCustomerExecutable(item)).length,
     active_opportunities: items.filter((item) => item.opportunity_signals.some((signal) => signal.code === "LIVE_DEAL_PRESENT")).length,
     brief,
     failures,
@@ -349,6 +369,69 @@ export async function buildCommandCentre(
   };
   writePortfolioSnapshot(snapshot);
   return snapshot;
+}
+
+export function refreshSnapshotOperatorControl(
+  snapshot: PortfolioSnapshot,
+  asOf?: string,
+): PortfolioSnapshot {
+  const now = asOf ?? new Date().toISOString();
+  const evidenceByOrganisation = new Map<string, WatchItemEvidenceContext>();
+  for (const item of snapshot.watch_items) {
+    if (!evidenceByOrganisation.has(item.organisation_id)) {
+      evidenceByOrganisation.set(item.organisation_id, {
+        evidence_fingerprint: item.evidence_snapshot_ref,
+        sales_events: listSalesEvents({
+          organisationIds: [item.organisation_id],
+          contactIds: item.contact_ids,
+        }),
+        retrieval_ok: true,
+      });
+    }
+  }
+  const resetItems = snapshot.watch_items.map((item) => ({
+    ...item,
+    customer_queue: item.system_customer_queue ?? item.customer_queue,
+    operator_control: undefined,
+    effective_queue_state: undefined,
+  }));
+  const items = applyOperatorControlToWatchItems(resetItems, { asOf: now, evidenceByOrganisation });
+  const brief = deterministicDailyBrief(items, snapshot.failures, now);
+  return {
+    ...snapshot,
+    generated_at: now,
+    watch_items: items,
+    brief,
+    needs_action_today: items.filter((item) => isEffectivelyCustomerExecutable(item)).length,
+    waiting_count: items.filter(
+      (item) =>
+        item.effective_queue_state === "WAIT" ||
+        item.executability === "WAITING_FOR_TIME" ||
+        item.executability === "WAITING_FOR_CUSTOMER" ||
+        item.executability === "DATA_REQUIRED" ||
+        item.priority === "P4" ||
+        item.next_best_action === "WAIT",
+    ).length,
+    stalled_count: items.filter((item) => item.stalled_state === "STALLED").length,
+    active_opportunities: items.filter((item) =>
+      item.opportunity_signals.some((signal) => signal.code === "LIVE_DEAL_PRESENT"),
+    ).length,
+    tokens: { ...snapshot.tokens, openai_calls: snapshot.tokens.openai_calls },
+  };
+}
+
+export function enrichWatchItemsForOperatorControl(
+  items: ReturnType<typeof sortWatchItems>,
+  evidenceByOrganisation: Map<string, WatchItemEvidenceContext>,
+) {
+  return items.map((item) => ({
+    ...item,
+    system_customer_queue: item.customer_queue,
+    system_priority_band: item.priority,
+    recommendation_fingerprint: recommendationFingerprintFromWatchItem(item),
+    decision_context_snapshot: decisionContextSnapshotFromWatchItem(item),
+    evidence_snapshot_ref: evidenceByOrganisation.get(item.organisation_id)?.evidence_fingerprint,
+  }));
 }
 
 export function _testOnlyGroup(records: UniverseRecord[], publicDomains: Set<string>): OrganisationCluster[] {

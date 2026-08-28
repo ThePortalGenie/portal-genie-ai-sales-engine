@@ -163,6 +163,7 @@ async function refreshStatus() {
     const explorer = $("explorer-status");
     if (explorer && !relationshipOpen()) explorer.textContent = "Zoho status could not be read. Open Settings.";
   }
+  await renderM365Connections();
   try {
     const openai = await api("/api/intelligence/status");
     openaiNode.textContent = openai.configured ? "Ready" : "Not configured";
@@ -208,6 +209,91 @@ function renderConnection(status) {
   card.append(el("h3", { text: "Granted/expected scopes" }));
   for (const scope of status.capabilities || []) {
     card.append(el("div", { class: "muted", text: scope }));
+  }
+}
+
+function m365MailboxLabel(status) {
+  if (status === "connected") return { text: "Connected", cls: "ok" };
+  if (status === "connection_error") return { text: "Error", cls: "bad" };
+  return { text: "Not connected", cls: "warn" };
+}
+
+function productScopeLabel(scope) {
+  if (scope === "PORTAL_GENIE") return "Portal Genie";
+  if (scope === "NAGGING_PANDA") return "Nagging Panda";
+  return scope || "—";
+}
+
+async function renderM365Connections() {
+  const card = $("m365-connection-card");
+  if (!card) return;
+  card.replaceChildren();
+  try {
+    const status = await api("/api/m365/status");
+    card.append(
+      el("h3", { text: "Microsoft 365 mailboxes" }),
+      el("p", { class: "muted", text: "Read-only delegated access. Tokens stay on the server; sync is operator-triggered only." }),
+      kv("App configured", status.configured ? "Yes" : "Missing client credentials"),
+      kv("Tenant", status.tenantId || "—"),
+      kv("Redirect URI", status.redirectUri || "—"),
+      kv("Access", "Read-only"),
+    );
+    card.append(el("h4", { text: "Granted/expected scopes" }));
+    for (const scope of status.scopes || []) {
+      card.append(el("div", { class: "muted", text: scope }));
+    }
+    for (const mailbox of status.mailboxes || []) {
+      const label = m365MailboxLabel(mailbox.status);
+      const block = el("div", { class: "card nested" });
+      block.append(
+        el("h4", { text: productScopeLabel(mailbox.product_scope) }),
+        el("p", {}, [el("span", { class: `pill ${label.cls}`, text: label.text })]),
+        kv("Connection id", mailbox.connection_id),
+        kv("Mailbox", mailbox.mailbox_email || "—"),
+        kv("Display name", mailbox.display_name || "—"),
+        kv("Product scope", mailbox.product_scope),
+        kv("Last successful connection", mailbox.last_successful_connection || "Never"),
+        kv("Last sync attempt", mailbox.last_sync_attempt || "Never"),
+        kv("Last successful sync", mailbox.last_successful_sync || "Never"),
+        kv("Retrieval state", mailbox.retrieval_state || "UNAVAILABLE"),
+      );
+      if (mailbox.error) block.append(el("p", { class: "muted", text: mailbox.error }));
+      const row = el("div", { class: "row" });
+      const connect = el("a", {
+        class: "button secondary",
+        href: `/api/m365/oauth/start?connection_id=${encodeURIComponent(mailbox.connection_id)}`,
+        text: "Connect",
+      });
+      const testBtn = el("button", { type: "button", class: "secondary", text: "Test" });
+      testBtn.addEventListener("click", async () => {
+        testBtn.disabled = true;
+        try {
+          await api("/api/m365/test", { method: "POST", body: JSON.stringify({ connectionId: mailbox.connection_id }) });
+          await renderM365Connections();
+        } catch (error) {
+          alert(operatorMessage(error));
+        } finally {
+          testBtn.disabled = false;
+        }
+      });
+      const syncBtn = el("button", { type: "button", class: "secondary", text: "Sync" });
+      syncBtn.addEventListener("click", async () => {
+        syncBtn.disabled = true;
+        try {
+          await api("/api/m365/sync", { method: "POST", body: JSON.stringify({ connectionId: mailbox.connection_id }) });
+          await renderM365Connections();
+        } catch (error) {
+          alert(operatorMessage(error));
+        } finally {
+          syncBtn.disabled = false;
+        }
+      });
+      row.append(connect, testBtn, syncBtn);
+      block.append(row);
+      card.append(block);
+    }
+  } catch {
+    card.append(el("p", { class: "muted", text: "Microsoft 365 status unavailable." }));
   }
 }
 
@@ -1269,6 +1355,7 @@ $("connect-form").addEventListener("submit", async (event) => {
   try {
     const status = await api("/api/zoho/connect", { method: "POST", body: JSON.stringify({ grantCode }) });
     renderConnection(status);
+    await renderM365Connections();
     $("connect-status").textContent = status.status === "connected" ? "Connected." : status.error || status.status;
     await refreshStatus();
   } catch (error) {
@@ -1281,6 +1368,7 @@ $("test-connection").addEventListener("click", async () => {
   try {
     const status = await api("/api/zoho/test", { method: "POST", body: "{}" });
     renderConnection(status);
+    await renderM365Connections();
     $("connect-status").textContent = status.status === "connected" ? "Test succeeded." : status.error || "Test failed.";
     await refreshStatus();
   } catch (error) {
@@ -1621,6 +1709,642 @@ function whenLabel(item) {
   return words(item.action_timing);
 }
 
+const OPERATOR_NOTE_MAX = 4000;
+const WAITING_REASON_OPTIONS = [
+  { value: "DO_NOT_CHASE", label: "Waiting on customer" },
+  { value: "WAITING_ON_US", label: "Waiting on us" },
+  { value: "BOARD_MEETING_PENDING", label: "Future commitment" },
+  { value: "OTHER", label: "Other" },
+];
+
+let ccManageDialog = null;
+let ccManageItem = null;
+
+function isoDateDaysFromNow(days) {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function decisionPayloadFromWatchItem(item, fields = {}) {
+  if (!item.recommendation_fingerprint) {
+    throw new Error("Recommendation fingerprint missing. Rebuild the Command Centre before managing this item.");
+  }
+  return {
+    watch_item_id: item.id,
+    organisation_key: item.organisation_id,
+    product_scope: item.product_scope,
+    recommendation_fingerprint: item.recommendation_fingerprint,
+    evidence_snapshot_ref: item.evidence_snapshot_ref,
+    decision_context_snapshot: item.decision_context_snapshot || {
+      deal_ids: item.deal_ids || [],
+      recommended_contact_id: item.recommended_contact_id,
+      next_best_action: item.next_best_action,
+    },
+    ...fields,
+  };
+}
+
+function operatorControlBadgeText(item) {
+  const control = item.operator_control;
+  if (!control?.controlled) return null;
+  const type = control.primary_decision_type;
+  const until = control.effective_until ? formatDay(control.effective_until) : null;
+  const product = words(item.product_scope);
+  switch (type) {
+    case "SNOOZED":
+      return until ? `Snoozed until ${until}` : "Snoozed";
+    case "WAITING":
+      return control.operator_summary?.toLowerCase().includes("customer")
+        ? "Waiting on customer"
+        : "Waiting";
+    case "DISMISSED":
+      return "Dismissed";
+    case "RESEARCH_REQUIRED":
+      return "Research required";
+    case "NOT_AN_OPPORTUNITY":
+      return `Not an opportunity — ${product}`;
+    case "WRONG_ACTION":
+      return "Review required — wrong action";
+    case "WRONG_PERSON":
+      return "Review required — wrong person";
+    case "COMPLETED":
+    case "ALREADY_HANDLED":
+      return "Handled";
+    default:
+      return control.operator_summary ? words(control.operator_summary.split("—")[0].trim()) : "Under operator control";
+  }
+}
+
+function knownPeopleForWatchItem(item) {
+  const people = [];
+  const seen = new Set();
+  function add(id, name) {
+    if (!id && !name) return;
+    const key = id || name;
+    if (seen.has(key)) return;
+    seen.add(key);
+    people.push({ id: id || "", name: name || "Unknown" });
+  }
+  add(item.recommended_contact_id, item.recommended_contact_name);
+  add(item.primary_contact_id, item.primary_contact_name);
+  return people;
+}
+
+function ensureManageDialog() {
+  if (ccManageDialog) return ccManageDialog;
+  const dialog = el("dialog", { class: "cc-manage-dialog", id: "cc-manage-dialog" });
+  const panel = el("div", { class: "cc-manage-panel" });
+  const header = el("div", { class: "cc-manage-header" });
+  const title = el("h3", { id: "cc-manage-title", text: "Manage recommendation" });
+  const close = el("button", { type: "button", class: "secondary cc-manage-close", text: "Close", "aria-label": "Close" });
+  header.append(title, close);
+  const summary = el("div", { class: "cc-manage-summary", id: "cc-manage-summary" });
+  const body = el("div", { class: "cc-manage-body", id: "cc-manage-body" });
+  const status = el("p", { class: "muted cc-manage-status", id: "cc-manage-status" });
+  const provenance = el("details", { class: "cc-manage-provenance", id: "cc-manage-provenance" }, [
+    el("summary", { text: "Control history" }),
+    el("div", { id: "cc-manage-provenance-body" }),
+  ]);
+  panel.append(header, summary, body, status, provenance);
+  dialog.append(panel);
+  close.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("close", () => {
+    ccManageItem = null;
+    body.replaceChildren();
+    status.textContent = "";
+  });
+  document.body.append(dialog);
+  ccManageDialog = dialog;
+  return dialog;
+}
+
+function manageSummaryNodes(item) {
+  const nodes = [
+    el("div", { class: "cc-manage-kv" }, [el("span", { text: "Organisation" }), el("strong", { text: item.organisation_name || "Unknown" })]),
+    el("div", { class: "cc-manage-kv" }, [el("span", { text: "Product" }), el("strong", { text: words(item.product_scope) })]),
+    el("div", { class: "cc-manage-kv" }, [el("span", { text: "System priority" }), el("strong", { text: item.system_priority_band || item.priority })]),
+    el("div", { class: "cc-manage-kv" }, [el("span", { text: "Recommended person" }), el("strong", { text: item.recommended_contact_name || "Unknown" })]),
+    el("div", { class: "cc-manage-kv" }, [el("span", { text: "Recommended action" }), el("strong", { text: words(item.next_best_action) })]),
+    el("div", { class: "cc-manage-kv" }, [el("span", { text: "Timing" }), el("strong", { text: whenLabel(item) })]),
+  ];
+  const badge = operatorControlBadgeText(item);
+  if (badge) nodes.push(el("p", { class: "cc-operator-badge", text: badge }));
+  return nodes;
+}
+
+async function loadManageProvenance(item) {
+  const host = $("cc-manage-provenance-body");
+  if (!host) return;
+  host.replaceChildren(el("p", { class: "muted", text: "Loading…" }));
+  try {
+    const data = await api(`/api/operator-decisions?watch_item_id=${encodeURIComponent(item.id)}&active_only=false`);
+    const decisions = (data.decisions || []).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    host.replaceChildren();
+    if (!decisions.length) {
+      host.append(el("p", { class: "muted", text: "No operator decisions for this recommendation yet." }));
+      return;
+    }
+    for (const decision of decisions.slice(0, 12)) {
+      const row = el("div", { class: "cc-provenance-row" });
+      row.append(el("strong", { text: `${formatWhen(decision.created_at)} · ${words(decision.decision_type)}` }));
+      row.append(el("div", { text: `Product: ${words(decision.product_scope)}` }));
+      if (decision.operator_note) row.append(el("div", { class: "muted", text: decision.operator_note }));
+      if (decision.effective_until) row.append(el("div", { class: "muted", text: `Until ${formatDay(decision.effective_until)}` }));
+      if (decision.linked_sales_event_id) row.append(el("div", { class: "muted", text: `Linked sales event: ${decision.linked_sales_event_id}` }));
+      if (decision.decision_type !== "REVOKED" && decision.id === item.operator_control?.active_decision_ids?.[0]) {
+        const undo = el("button", { type: "button", class: "secondary", text: "Undo / Reopen" });
+        undo.addEventListener("click", async () => {
+          undo.disabled = true;
+          try {
+            await api(`/api/operator-decisions/${encodeURIComponent(decision.id)}/revoke`, { method: "POST", body: JSON.stringify({}) });
+            await refreshCcControl();
+            const refreshed = (ccSnapshot?.watch_items || []).find((entry) => entry.id === item.id) || item;
+            openManageDialog(refreshed);
+            $("cc-manage-status").textContent = "Decision reopened. Queue updated.";
+          } catch (error) {
+            $("cc-manage-status").textContent = operatorMessage(error);
+          } finally {
+            undo.disabled = false;
+          }
+        });
+        row.append(undo);
+      }
+      host.append(row);
+    }
+  } catch (error) {
+    host.replaceChildren(el("p", { class: "warn-text", text: operatorMessage(error) }));
+  }
+}
+
+async function saveOperatorDecision(item, fields) {
+  const body = decisionPayloadFromWatchItem(item, fields);
+  if (body.operator_note && body.operator_note.length > OPERATOR_NOTE_MAX) {
+    throw new Error(`Note must be ${OPERATOR_NOTE_MAX} characters or fewer.`);
+  }
+  await api("/api/operator-decisions", { method: "POST", body: JSON.stringify(body) });
+  await refreshCcControl();
+}
+
+async function refreshCcControl() {
+  const data = await api("/api/command-centre/refresh-control", { method: "POST", body: "{}" });
+  ccSnapshot = data.snapshot || ccSnapshot;
+  renderCommandCentre();
+}
+
+function manageNoteField(placeholder) {
+  const input = el("textarea", { class: "cc-manage-note", rows: "3", maxlength: String(OPERATOR_NOTE_MAX), placeholder });
+  return input;
+}
+
+function manageActions(buttons, back) {
+  const row = el("div", { class: "cc-manage-actions row" });
+  if (back) {
+    const backBtn = el("button", { type: "button", class: "secondary", text: "Back" });
+    backBtn.addEventListener("click", () => openManageDialog(ccManageItem, "menu"));
+    row.append(backBtn);
+  }
+  row.append(...buttons);
+  return row;
+}
+
+function renderManageMenu(body, item, status) {
+  const choices = [
+    ["done", "Done"],
+    ["snooze", "Snooze"],
+    ["waiting", "Waiting"],
+    ["dismiss", "Dismiss"],
+    ["not-opportunity", "Not an opportunity"],
+    ["wrong-action", "Wrong action"],
+    ["wrong-person", "Wrong person"],
+    ["research", "Needs research"],
+    ["already-handled", "Already handled"],
+    ["context", "Add context"],
+  ];
+  const grid = el("div", { class: "cc-manage-menu" });
+  for (const [step, label] of choices) {
+    const btn = el("button", { type: "button", class: "secondary", text: label });
+    btn.addEventListener("click", () => openManageDialog(item, step));
+    grid.append(btn);
+  }
+  body.append(grid);
+  if (item.operator_control?.active_decision_ids?.length) {
+    const undo = el("button", { type: "button", text: "Undo active control" });
+    undo.addEventListener("click", async () => {
+      undo.disabled = true;
+      status.textContent = "Reopening…";
+      try {
+        const id = item.operator_control.active_decision_ids[0];
+        await api(`/api/operator-decisions/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({}) });
+        await refreshCcControl();
+        const refreshed = (ccSnapshot?.watch_items || []).find((entry) => entry.id === item.id) || item;
+        openManageDialog(refreshed, "menu");
+        status.textContent = "Control reopened. Queue updated.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        undo.disabled = false;
+      }
+    });
+    body.append(undo);
+  }
+}
+
+function renderSalesEventCapture(body, item, status, onSaved) {
+  body.append(el("p", { class: "muted", text: "Record what actually happened with the customer. This is saved as a Sales Event, not written to Zoho." }));
+  const contactSelect = el("select");
+  contactSelect.append(el("option", { value: "", text: "Organisation level" }));
+  for (const person of knownPeopleForWatchItem(item)) {
+    const option = el("option", { value: person.id, text: person.name });
+    option.dataset.name = person.name;
+    if (person.id === item.recommended_contact_id) option.selected = true;
+    contactSelect.append(option);
+  }
+  const productSelect = el("select", {}, optionList(SALES_EVENT_SCOPES, item.product_scope));
+  const typeSelect = el("select", {}, optionList(SALES_EVENT_TYPES, "PHONE_CALL"));
+  const outcomeSelect = el("select", {}, optionList(SALES_EVENT_OUTCOMES, "NO_ANSWER"));
+  const occurred = el("input", { type: "datetime-local", value: localDateTimeValue() });
+  const summary = el("input", { type: "text", placeholder: "What happened (required)", maxlength: "4000" });
+  const nextStep = el("input", { type: "text", placeholder: "Agreed next step (optional)", maxlength: "500" });
+  const followUp = el("input", { type: "date" });
+  const form = el("div", { class: "event-form" });
+  for (const [label, node, wide] of [
+    ["Contact", contactSelect],
+    ["Product", productSelect],
+    ["Event type", typeSelect],
+    ["Outcome", outcomeSelect],
+    ["Date/time", occurred],
+    ["Follow-up date", followUp],
+    ["What happened", summary, true],
+    ["Agreed next step", nextStep, true],
+  ]) {
+    form.append(el("label", { class: wide ? "wide" : "" }, [el("span", { text: label }), node]));
+  }
+  body.append(form);
+  const save = el("button", { type: "button", text: "Save customer interaction" });
+  save.addEventListener("click", async () => {
+    if (!summary.value.trim()) {
+      status.textContent = "What happened is required.";
+      return;
+    }
+    save.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const contactId = contactSelect.value;
+      const contactName = contactSelect.selectedOptions[0]?.dataset?.name || contactSelect.selectedOptions[0]?.text || "";
+      const eventBody = {
+        organisation_id: item.organisation_id,
+        contact_id: contactId,
+        contact_name: contactId ? contactName : "",
+        product_scope: productSelect.value,
+        event_type: typeSelect.value,
+        outcome: outcomeSelect.value,
+        occurred_at: occurred.value ? new Date(occurred.value).toISOString() : new Date().toISOString(),
+        summary: summary.value.trim(),
+        next_step: nextStep.value.trim(),
+        follow_up_date: followUp.value || "",
+      };
+      const data = await api("/api/sales-events", { method: "POST", body: JSON.stringify(eventBody) });
+      await onSaved(data.event);
+    } catch (error) {
+      status.textContent = operatorMessage(error);
+    } finally {
+      save.disabled = false;
+    }
+  });
+  body.append(manageActions([save], true));
+}
+
+function openManageDialog(item, step = "menu") {
+  ccManageItem = item;
+  const dialog = ensureManageDialog();
+  const summary = $("cc-manage-summary");
+  const body = $("cc-manage-body");
+  const status = $("cc-manage-status");
+  summary.replaceChildren(...manageSummaryNodes(item));
+  body.replaceChildren();
+  status.textContent = "";
+  void loadManageProvenance(item);
+
+  if (step === "menu") {
+    renderManageMenu(body, item, status);
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "dismiss") {
+    const note = manageNoteField("Optional reason");
+    body.append(el("p", { text: "Dismiss this recommendation from your action queue." }), note);
+    const save = el("button", { type: "button", text: "Save dismiss" });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await saveOperatorDecision(item, { decision_type: "DISMISSED", operator_note: note.value.trim() || undefined });
+        dialog.close();
+        $("cc-status").textContent = "Dismissed — removed from action queue. No CRM changes.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "snooze") {
+    const dateInput = el("input", { type: "date" });
+    const min = isoDateDaysFromNow(1);
+    dateInput.min = min;
+    dateInput.value = min;
+    const quick = el("div", { class: "row cc-snooze-quick" });
+    for (const [label, days] of [["Tomorrow", 1], ["3 days", 3], ["1 week", 7]]) {
+      const btn = el("button", { type: "button", class: "secondary", text: label });
+      btn.addEventListener("click", () => { dateInput.value = isoDateDaysFromNow(days); });
+      quick.append(btn);
+    }
+    body.append(el("p", { text: "Snooze until a future date." }), quick, el("label", {}, [el("span", { text: "Resume date" }), dateInput]));
+    const save = el("button", { type: "button", text: "Save snooze" });
+    save.addEventListener("click", async () => {
+      if (!dateInput.value || dateInput.value < isoDateDaysFromNow(0)) {
+        status.textContent = "Choose a future date.";
+        return;
+      }
+      save.disabled = true;
+      try {
+        await saveOperatorDecision(item, { decision_type: "SNOOZED", effective_until: dateInput.value });
+        dialog.close();
+        $("cc-status").textContent = `Snoozed until ${formatDay(dateInput.value)}.`;
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "waiting") {
+    const reason = el("select", {}, WAITING_REASON_OPTIONS.map((option) => el("option", { value: option.value, text: option.label })));
+    const followUp = el("input", { type: "date" });
+    const note = manageNoteField("Optional note");
+    body.append(el("p", { text: "Mark as waiting. This does not create a CRM task." }), reason, el("label", {}, [el("span", { text: "Optional follow-up date" }), followUp]), note);
+    const save = el("button", { type: "button", text: "Save waiting" });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        let reasonCode = reason.value;
+        let operatorNote = note.value.trim() || undefined;
+        if (reasonCode === "WAITING_ON_US") {
+          reasonCode = "OTHER";
+          operatorNote = operatorNote ? `Waiting on us: ${operatorNote}` : "Waiting on us.";
+        }
+        await saveOperatorDecision(item, {
+          decision_type: "WAITING",
+          reason_code: reasonCode,
+          operator_note: operatorNote,
+          effective_until: followUp.value || undefined,
+        });
+        dialog.close();
+        $("cc-status").textContent = "Marked as waiting.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "not-opportunity") {
+    const note = manageNoteField("Optional reason");
+    const productLabel = words(item.product_scope);
+    const other = item.product_scope === "PORTAL_GENIE" ? "Nagging Panda" : "Portal Genie";
+    body.append(
+      el("p", { class: "cc-manage-warning", text: `Not an opportunity for: ${item.organisation_name || "Unknown"} — ${productLabel}` }),
+      el("p", { class: "muted", text: `This will NOT suppress ${other}.` }),
+      note,
+    );
+    const save = el("button", { type: "button", text: "Confirm not an opportunity" });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await saveOperatorDecision(item, { decision_type: "NOT_AN_OPPORTUNITY", operator_note: note.value.trim() || undefined });
+        dialog.close();
+        $("cc-status").textContent = `Not an opportunity for ${productLabel}. Other products unaffected.`;
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "wrong-action") {
+    const note = manageNoteField('Optional correction, e.g. "Email rather than call."');
+    body.append(el("p", { text: "The recommended action is wrong. The opportunity stays visible for review." }), note);
+    const save = el("button", { type: "button", text: "Save wrong action" });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await saveOperatorDecision(item, { decision_type: "WRONG_ACTION", operator_note: note.value.trim() || undefined, explicit_quality_feedback: "WRONG_ACTION" });
+        dialog.close();
+        $("cc-status").textContent = "Wrong action recorded — review required.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "wrong-person") {
+    const people = knownPeopleForWatchItem(item);
+    const personSelect = el("select");
+    personSelect.append(el("option", { value: "", text: "Select known person (optional)" }));
+    for (const person of people) {
+      if (person.id === item.recommended_contact_id) continue;
+      const option = el("option", { value: person.id, text: person.name });
+      option.dataset.name = person.name;
+      personSelect.append(option);
+    }
+    const note = manageNoteField('If not listed, add a short note, e.g. "Speak to Sarah in finance."');
+    body.append(
+      el("p", { text: `Recommended: ${item.recommended_contact_name || "Unknown"}` }),
+      personSelect,
+      note,
+    );
+    const save = el("button", { type: "button", text: "Save wrong person" });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        const selected = personSelect.selectedOptions[0];
+        await saveOperatorDecision(item, {
+          decision_type: "WRONG_PERSON",
+          preferred_contact_id: personSelect.value || undefined,
+          preferred_contact_name: selected?.dataset?.name || undefined,
+          operator_note: note.value.trim() || undefined,
+          explicit_quality_feedback: "WRONG_PERSON",
+        });
+        dialog.close();
+        $("cc-status").textContent = "Wrong person recorded — review required.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "research") {
+    const note = manageNoteField('Optional note, e.g. "Need to establish who owns partnerships."');
+    body.append(el("p", { text: "Move to research / data required." }), note);
+    const save = el("button", { type: "button", text: "Save research required" });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await saveOperatorDecision(item, { decision_type: "RESEARCH_REQUIRED", operator_note: note.value.trim() || undefined });
+        dialog.close();
+        $("cc-status").textContent = "Marked as research required.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "context") {
+    const note = manageNoteField('e.g. "Sarah is actually the decision maker."');
+    body.append(el("p", { text: "Add operator context without recording a customer interaction." }), note);
+    const save = el("button", { type: "button", text: "Save context" });
+    save.addEventListener("click", async () => {
+      if (!note.value.trim()) {
+        status.textContent = "Enter a short note.";
+        return;
+      }
+      save.disabled = true;
+      try {
+        await saveOperatorDecision(item, { decision_type: "WAITING", reason_code: "OTHER", operator_note: note.value.trim() });
+        dialog.close();
+        $("cc-status").textContent = "Context saved.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "done") {
+    body.append(el("p", { text: "What happened?" }));
+    const customer = el("button", { type: "button", text: "Customer interaction" });
+    const internal = el("button", { type: "button", class: "secondary", text: "Internal / review only" });
+    customer.addEventListener("click", () => openManageDialog(item, "done-customer"));
+    internal.addEventListener("click", () => openManageDialog(item, "done-internal"));
+    body.append(el("div", { class: "row" }, [customer, internal]));
+    body.append(manageActions([], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "done-internal") {
+    const note = manageNoteField("Optional note about internal work completed");
+    body.append(el("p", { text: "Record internal work only — not a customer interaction." }), note);
+    const save = el("button", { type: "button", text: "Save done (internal)" });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await saveOperatorDecision(item, { decision_type: "COMPLETED", operator_note: note.value.trim() || undefined });
+        dialog.close();
+        $("cc-status").textContent = "Internal work recorded. No Sales Event created.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "done-customer") {
+    renderSalesEventCapture(body, item, status, async (event) => {
+      await saveOperatorDecision(item, { decision_type: "COMPLETED", linked_sales_event_id: event.id });
+      dialog.close();
+      $("cc-status").textContent = "Customer interaction saved and recommendation completed.";
+    });
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "already-handled") {
+    body.append(el("p", { text: "Was there a real customer interaction for this recommendation?" }));
+    const yes = el("button", { type: "button", text: "Yes — record interaction" });
+    const no = el("button", { type: "button", class: "secondary", text: "No — already dealt with" });
+    yes.addEventListener("click", () => openManageDialog(item, "already-handled-customer"));
+    no.addEventListener("click", () => openManageDialog(item, "already-handled-only"));
+    body.append(el("div", { class: "row" }, [yes, no]));
+    body.append(manageActions([], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "already-handled-only") {
+    const note = manageNoteField("Optional note");
+    body.append(el("p", { text: "Mark recommendation as already handled without fabricating customer activity." }), note);
+    const save = el("button", { type: "button", text: "Save already handled" });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await saveOperatorDecision(item, { decision_type: "ALREADY_HANDLED", operator_note: note.value.trim() || undefined });
+        dialog.close();
+        $("cc-status").textContent = "Marked as already handled.";
+      } catch (error) {
+        status.textContent = operatorMessage(error);
+      } finally {
+        save.disabled = false;
+      }
+    });
+    body.append(manageActions([save], true));
+    dialog.showModal();
+    return;
+  }
+
+  if (step === "already-handled-customer") {
+    renderSalesEventCapture(body, item, status, async (event) => {
+      await saveOperatorDecision(item, { decision_type: "ALREADY_HANDLED", linked_sales_event_id: event.id });
+      dialog.close();
+      $("cc-status").textContent = "Customer interaction recorded. Recommendation marked already handled.";
+    });
+    dialog.showModal();
+  }
+}
+
 function renderCommandCentre() {
   const root = $("cc-root");
   const status = $("cc-status");
@@ -1703,6 +2427,16 @@ function renderCommandCentre() {
     if (item.stalled_reasons?.length && (item.stalled_state === "STALLED" || item.stalled_state === "WATCH" || item.stalled_state === "INSUFFICIENT_EVIDENCE" || item.stalled_state === "WAITING_ON_CUSTOMER" || item.stalled_state === "WAITING_ON_US")) {
       appendKv(card, "Stalled reason", item.stalled_reasons.join(" "));
     }
+    const badgeText = operatorControlBadgeText(item);
+    if (badgeText) card.append(el("p", { class: "cc-operator-badge", text: badgeText }));
+    const actions = el("div", { class: "cc-item-actions row" });
+    const manageBtn = el("button", { type: "button", class: "secondary cc-manage-btn", text: "Manage" });
+    manageBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openManageDialog(item);
+    });
+    actions.append(manageBtn);
+    card.append(actions);
     const open = () => {
       if (!item.source_record?.module || !item.source_record?.recordId) return;
       location.hash = "explorer";

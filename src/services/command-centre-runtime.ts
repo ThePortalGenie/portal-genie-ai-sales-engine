@@ -5,8 +5,8 @@ import { loadCommandCentreThresholds } from "../config/command-centre.js";
 import { loadFirstPartyDomains } from "../config/first-party-domains.js";
 import { zohoRuntime } from "./zoho-runtime.js";
 import { runCommercialAnalysis } from "./intelligence-runtime.js";
-import { scanCommandCentre, buildCommandCentre, type CommandCentreDeps } from "../intelligence/command-centre.js";
-import { readLastScan, readPortfolioSnapshot } from "../intelligence/portfolio-store.js";
+import { scanCommandCentre, buildCommandCentre, refreshSnapshotOperatorControl, type CommandCentreDeps } from "../intelligence/command-centre.js";
+import { readLastScan, readPortfolioSnapshot, writePortfolioSnapshot } from "../intelligence/portfolio-store.js";
 import { DEFAULT_OPENAI_MODEL } from "../intelligence/openai-reasoner.js";
 import { redactOpenAiError } from "../intelligence/openai-reasoner.js";
 
@@ -69,4 +69,14 @@ export async function buildSalesCommandCentre(options: {
   includeBriefSynthesis?: boolean;
 }) {
   return buildCommandCentre(deps(), options);
+}
+
+export function refreshSalesCommandCentreControl() {
+  const snapshot = readPortfolioSnapshot();
+  if (!snapshot) {
+    return { snapshot: null, openaiTriggered: false };
+  }
+  const refreshed = refreshSnapshotOperatorControl(snapshot);
+  writePortfolioSnapshot(refreshed);
+  return { snapshot: refreshed, openaiTriggered: false };
 }
