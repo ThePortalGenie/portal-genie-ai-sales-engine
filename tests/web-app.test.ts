@@ -133,6 +133,20 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /Context saved — queue unchanged/);
     assert.match(js, /watchItemProductLabel/);
     assert.match(js, /Registered/);
+    assert.match(js, /crmWritesStatusLabel/);
+    assert.match(js, /CRM writes/);
+    assert.match(js, /cannot modify Contacts, Accounts, Deals, Leads, or pipeline data/);
+  });
+});
+
+test("GET /api/zoho/status exposes CRM writes mode without secrets", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/zoho/status`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(body.crmWrites === "disabled" || body.crmWrites === "notes_only");
+    assert.equal(body.readOnly, true);
+    assert.doesNotMatch(JSON.stringify(body), /refresh_token|access_token|client_secret/i);
   });
 });
 

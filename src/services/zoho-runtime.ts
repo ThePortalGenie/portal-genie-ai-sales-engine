@@ -23,6 +23,8 @@ import type { DiscoveryDiagnostic } from "../integrations/zoho/types.js";
 
 export type ConnectionStatus = "connected" | "not_connected" | "connection_error";
 
+export type CrmWritesMode = "disabled" | "notes_only";
+
 export type ZohoConnectionView = {
   status: ConnectionStatus;
   organisation?: string;
@@ -36,7 +38,9 @@ export type ZohoConnectionView = {
   refreshTokenConfigured: boolean;
   redirectUri?: string;
   error?: string;
+  /** CRM record fields and pipeline remain read-only; see crmWrites for Notes exception. */
   readOnly: true;
+  crmWrites: CrmWritesMode;
 };
 
 type Runtime = {
@@ -48,6 +52,10 @@ type Runtime = {
 };
 
 const STATUS_FILE = () => resolve(process.cwd(), "diagnostics/zoho-status.json");
+
+function crmWritesMode(): CrmWritesMode {
+  return process.env.ZOHO_WRITE_ENABLED === "true" ? "notes_only" : "disabled";
+}
 
 function readStatusFile(): { lastSuccessfulConnection?: string } {
   try {
@@ -129,6 +137,7 @@ export class ZohoRuntime {
       redirectUri: process.env.ZOHO_REDIRECT_URI,
       lastSuccessfulConnection: stored.lastSuccessfulConnection,
       readOnly: true,
+      crmWrites: crmWritesMode(),
     };
 
     if (!clientIdConfigured || !clientSecretConfigured || !refreshTokenConfigured) {

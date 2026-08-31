@@ -174,6 +174,10 @@ async function refreshStatus() {
   }
 }
 
+function crmWritesStatusLabel(mode) {
+  return mode === "notes_only" ? "Notes only" : "Disabled";
+}
+
 function renderConnection(status) {
   const card = $("connection-card");
   if (!card) return;
@@ -191,7 +195,11 @@ function renderConnection(status) {
     kv("Client secret", status.clientSecretConfigured ? "Configured" : "Missing"),
     kv("Refresh token", status.refreshTokenConfigured ? "Configured" : "Missing"),
     kv("Redirect URI", status.redirectUri || "—"),
-    kv("Access", "Read-only"),
+    kv("CRM writes", crmWritesStatusLabel(status.crmWrites ?? "disabled")),
+    el("p", {
+      class: "muted",
+      text: "Sales Engine cannot modify Contacts, Accounts, Deals, Leads, or pipeline data.",
+    }),
   );
   if (status.error) card.append(el("p", { class: "muted", text: status.error }));
   api("/api/intelligence/status")
