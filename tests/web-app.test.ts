@@ -84,10 +84,16 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /renderCcWorkQueue/);
     assert.match(js, /renderCcCommercialSnapshot/);
     assert.match(js, /ccQueueInsightCounts/);
+    assert.match(js, /ccPresentationBucket/);
+    assert.match(js, /ccBucketView/);
+    assert.match(js, /setCcBucketView/);
+    assert.match(js, /Current focus/);
+    assert.match(js, /CC_SNAPSHOT_VIEWS/);
     assert.match(js, /Scan details/);
     assert.match(js, /organisations monitored/);
     assert.doesNotMatch(js, /Scan estimate/);
     assert.match(js, /Focus now/);
+    assert.doesNotMatch(js, /effective_queue_state === "WAIT"\) return true/);
     assert.match(js, /urgencyLabel/);
     assert.match(js, /openCcDetailDialog/);
     assert.match(js, /cc-detail-dialog/);
@@ -157,7 +163,8 @@ test("GET /assets/app.css lets the workspace scroll past the analysis hero", asy
     assert.equal(response.status, 200);
     assert.match(css, /\.app-shell\s*\{[^}]*overflow:\s*hidden/s);
     assert.match(css, /\.workspace\s*\{[^}]*overflow:\s*auto/s);
-    assert.match(css, /\.cc-snapshot/);
+    assert.match(css, /\.cc-snapshot-count\.is-active/);
+    assert.match(css, /\.cc-snapshot-viewbar/);
     assert.match(css, /\.cc-scan-details/);
     assert.match(css, /\.cc-item-compact/);
     assert.match(css, /\.cc-detail-dialog/);

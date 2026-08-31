@@ -1469,72 +1469,106 @@ let ccScan = null;
 let ccSnapshot = null;
 let ccDetailDialog = null;
 let ccDetailItem = null;
+let ccBucketView = "default";
 
-function isPrimaryQueueExcluded(item) {
-  if (item.priority === "P5") return true;
-  if (item.effective_queue_state === "SYSTEM_NO_ACTION") return true;
-  if (item.next_best_action === "NO_ACTION" && item.action_timing === "NO_ACTION_REQUIRED") return true;
-  return false;
+const CC_SNAPSHOT_VIEWS = [
+  { key: "actNow", bucket: "focus_now", label: "Act now" },
+  { key: "next", bucket: "next", label: "Next" },
+  { key: "later", bucket: "later", label: "Later" },
+  { key: "waiting", bucket: "waiting", label: "Waiting" },
+];
+
+function setCcBucketView(key) {
+  if (key === "default") {
+    ccBucketView = "default";
+  } else if (ccBucketView === key) {
+    ccBucketView = "default";
+  } else {
+    ccBucketView = key;
+  }
+  renderCommandCentre();
 }
 
-function isFocusNowItem(item) {
-  if (isPrimaryQueueExcluded(item)) return false;
-  if (item.operator_control?.controlled && item.operator_control.actionable === false) return false;
-  return (
+function ccItemsForPresentationBucket(items, bucket) {
+  return items.filter((item) => ccPresentationBucket(item) === bucket);
+}
+
+function isPrimaryQueueExcluded(item) {
+  return ccPresentationBucket(item) === "excluded";
+}
+
+function ccPresentationBucket(item) {
+  if (item.priority === "P5") return "excluded";
+  if (item.effective_queue_state === "SYSTEM_NO_ACTION") return "excluded";
+  if (item.next_best_action === "NO_ACTION" && item.action_timing === "NO_ACTION_REQUIRED") return "excluded";
+  if (item.operator_control?.controlled && item.operator_control.actionable === false) return "excluded";
+
+  if (
+    item.effective_queue_state === "WAIT" ||
+    item.executability === "WAITING_FOR_TIME" ||
+    item.executability === "WAITING_FOR_CUSTOMER" ||
+    item.next_best_action === "WAIT"
+  ) {
+    return "waiting";
+  }
+
+  if (
     (item.priority === "P0" || item.priority === "P1") &&
     item.executability === "EXECUTABLE_NOW" &&
     item.actionability_kind === "CUSTOMER_ACTION" &&
     item.customer_queue !== false
-  );
-}
+  ) {
+    return "focus_now";
+  }
 
-function isNextItem(item) {
-  if (isPrimaryQueueExcluded(item)) return false;
-  if (isFocusNowItem(item)) return false;
-  if (item.operator_control?.controlled && item.operator_control.actionable === false) return false;
-  if (item.effective_queue_state === "REVIEW_REQUIRED") return true;
-  if (item.effective_queue_state === "RESEARCH" && item.actionability_kind === "INTERNAL_RESEARCH") return true;
-  if (item.effective_queue_state === "WAIT") return true;
+  if (item.effective_queue_state === "REVIEW_REQUIRED") return "next";
+  if (item.effective_queue_state === "RESEARCH" && item.actionability_kind === "INTERNAL_RESEARCH") return "next";
   if (
     (item.priority === "P2" || item.priority === "P3") &&
     item.actionability_kind === "CUSTOMER_ACTION" &&
     item.customer_queue !== false &&
     item.executability === "EXECUTABLE_NOW"
   ) {
-    return true;
+    return "next";
   }
-  return false;
+
+  return "later";
+}
+
+function isFocusNowItem(item) {
+  return ccPresentationBucket(item) === "focus_now";
+}
+
+function isNextItem(item) {
+  return ccPresentationBucket(item) === "next";
 }
 
 function urgencyLabel(item) {
-  if (item.priority === "P0" || item.action_timing === "ACT_NOW" || item.action_timing === "OVERDUE") return "NOW";
-  if (item.action_timing === "TODAY") return "TODAY";
-  if (item.action_due_at) {
-    const due = Date.parse(item.action_due_at);
-    if (!Number.isNaN(due)) {
-      const days = (due - Date.now()) / 86400000;
-      if (days <= 0) return "NOW";
-      if (days <= 1) return "TODAY";
-      if (days <= 7) return "THIS WEEK";
-      return "LATER";
+  const bucket = ccPresentationBucket(item);
+  if (bucket === "waiting") {
+    const existing = whenLabel(item);
+    if (/^WAIT UNTIL/i.test(existing)) return existing;
+    return "WAITING";
+  }
+  if (bucket === "focus_now") {
+    if (item.action_timing === "TODAY") return "TODAY";
+    return "NOW";
+  }
+  if (bucket === "next") {
+    if (item.action_timing === "TODAY") return "TODAY";
+    if (item.action_timing === "SCHEDULED_DATE") return "THIS WEEK";
+    if (item.action_due_at) {
+      const due = Date.parse(item.action_due_at);
+      if (!Number.isNaN(due)) {
+        const days = (due - Date.now()) / 86400000;
+        if (days <= 1) return "TODAY";
+        if (days <= 7) return "THIS WEEK";
+      }
     }
+    return "NEXT";
   }
-  if (item.action_timing === "SCHEDULED_DATE") return "THIS WEEK";
-  if (
-    item.priority === "P4" ||
-    item.executability === "WAITING_FOR_TIME" ||
-    item.executability === "WAITING_FOR_CUSTOMER" ||
-    item.next_best_action === "WAIT"
-  ) {
-    return "LATER";
-  }
-  const existing = whenLabel(item);
-  if (existing === "OVERDUE" || existing === "NOW") return "NOW";
-  if (existing === "TODAY") return "TODAY";
-  if (existing === "NO ACTION TODAY" || existing === "AWAITING CUSTOMER") return "LATER";
-  if (/^WAIT UNTIL/i.test(existing)) return existing;
-  if (existing === "USAGE DATA REQUIRED") return existing;
-  return existing;
+  if (bucket === "later") return "LATER";
+  return "—";
 }
 
 function focusWatchItem(watchItemId) {
@@ -1564,7 +1598,7 @@ function renderCcCompactCard(item) {
     el("span", { class: "cc-item-urgency", text: urgencyLabel(item) }),
   );
   card.append(head);
-  card.append(el("div", { class: "cc-item-product muted", text: productScopeLabel(item.product_scope) }));
+  card.append(el("div", { class: "cc-item-product muted", text: watchItemProductLabel(item) }));
   const person = item.recommended_contact_name || item.primary_contact_name;
   if (person) card.append(el("div", { class: "cc-item-person", text: person }));
   card.append(el("div", { class: "cc-item-action", text: words(item.next_best_action) }));
@@ -1597,28 +1631,20 @@ function renderCcWorkSection(title, items, emptyMessage) {
 }
 
 function isWorkingRecommendation(item) {
-  if (isPrimaryQueueExcluded(item)) return false;
-  if (item.operator_control?.controlled && item.operator_control.actionable === false) return false;
-  return true;
+  const bucket = ccPresentationBucket(item);
+  return bucket !== "excluded";
 }
 
 function ccQueueInsightCounts(items) {
-  const working = items.filter(isWorkingRecommendation);
-  let actNow = 0;
-  let next = 0;
-  let later = 0;
-  let waiting = 0;
-  for (const item of working) {
-    if (item.effective_queue_state === "WAIT") {
-      waiting += 1;
-      continue;
-    }
-    const urgency = urgencyLabel(item);
-    if (urgency === "NOW" || urgency === "TODAY") actNow += 1;
-    else if (urgency === "THIS WEEK") next += 1;
-    else later += 1;
+  const counts = { actNow: 0, next: 0, later: 0, waiting: 0 };
+  for (const item of items) {
+    const bucket = ccPresentationBucket(item);
+    if (bucket === "focus_now") counts.actNow += 1;
+    else if (bucket === "next") counts.next += 1;
+    else if (bucket === "later") counts.later += 1;
+    else if (bucket === "waiting") counts.waiting += 1;
   }
-  return { actNow, next, later, waiting };
+  return counts;
 }
 
 function ccSystemSummary(snapshot, scan) {
@@ -1632,18 +1658,34 @@ function renderCcCommercialSnapshot(snapshot) {
   const counts = ccQueueInsightCounts(snapshot.watch_items || []);
   const panel = el("div", { class: "cc-snapshot" });
   const grid = el("div", { class: "cc-snapshot-counts" });
-  for (const [label, value] of [
-    ["Act now", counts.actNow],
-    ["Next", counts.next],
-    ["Later", counts.later],
-    ["Waiting", counts.waiting],
-  ]) {
-    const cell = el("div", { class: "cc-snapshot-count" });
+  for (const view of CC_SNAPSHOT_VIEWS) {
+    const value = counts[view.key];
+    const cell = el("button", {
+      type: "button",
+      class: `cc-snapshot-count${ccBucketView === view.key ? " is-active" : ""}`,
+      "aria-pressed": ccBucketView === view.key ? "true" : "false",
+      "aria-label": `${view.label}: ${value} recommendation${value === 1 ? "" : "s"}`,
+    });
     cell.append(el("span", { class: "cc-snapshot-count-value", text: String(value) }));
-    cell.append(el("span", { class: "cc-snapshot-count-label", text: label }));
+    cell.append(el("span", { class: "cc-snapshot-count-label", text: view.label }));
+    cell.addEventListener("click", () => setCcBucketView(view.key));
     grid.append(cell);
   }
   panel.append(grid);
+  if (ccBucketView !== "default") {
+    const active = CC_SNAPSHOT_VIEWS.find((view) => view.key === ccBucketView);
+    const viewBar = el("div", { class: "cc-snapshot-viewbar row" });
+    viewBar.append(
+      el("span", {
+        class: "cc-snapshot-view-label muted",
+        text: `Viewing ${active?.label.toLowerCase() ?? "recommendations"} recommendations`,
+      }),
+    );
+    const currentFocus = el("button", { type: "button", class: "secondary cc-snapshot-focus", text: "Current focus" });
+    currentFocus.addEventListener("click", () => setCcBucketView("default"));
+    viewBar.append(currentFocus);
+    panel.append(viewBar);
+  }
   panel.append(el("p", { class: "cc-snapshot-summary muted", text: ccSystemSummary(snapshot, ccScan) }));
   panel.append(el("p", { class: "cc-snapshot-asof muted", text: `As of ${formatWhen(snapshot.generated_at)}` }));
 
@@ -1663,11 +1705,23 @@ function renderCcCommercialSnapshot(snapshot) {
 
 function renderCcWorkQueue(snapshot) {
   const items = snapshot.watch_items || [];
+  const wrap = el("div", { class: "cc-work" });
+  if (ccBucketView !== "default") {
+    const active = CC_SNAPSHOT_VIEWS.find((view) => view.key === ccBucketView);
+    const filtered = ccItemsForPresentationBucket(items, active.bucket);
+    wrap.append(
+      renderCcWorkSection(
+        active.label,
+        filtered,
+        `No ${active.label.toLowerCase()} recommendations right now.`,
+      ),
+    );
+    return wrap;
+  }
   const focusNow = items.filter(isFocusNowItem);
   const next = items.filter(isNextItem);
-  const wrap = el("div", { class: "cc-work" });
   wrap.append(renderCcWorkSection("Focus now", focusNow, "Nothing needs immediate customer contact."));
-  wrap.append(renderCcWorkSection("Next", next, "No further queued actions right now."));
+  wrap.append(renderCcWorkSection("Next", next, "No further queued recommendations right now."));
   return wrap;
 }
 

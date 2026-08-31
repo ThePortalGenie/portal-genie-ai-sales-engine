@@ -437,6 +437,38 @@ pre {
   flex-direction: column;
   gap: 0.1rem;
   min-width: 0;
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0.35rem 0.45rem;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.cc-snapshot-count:hover {
+  border-color: var(--line);
+  background: rgba(0, 0, 0, 0.02);
+}
+.cc-snapshot-count.is-active {
+  border-color: var(--accent, #1f6feb);
+  background: rgba(31, 111, 235, 0.06);
+}
+.cc-snapshot-viewbar {
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.15rem 0 0.55rem;
+  flex-wrap: wrap;
+}
+.cc-snapshot-view-label {
+  font-size: 0.88rem;
+}
+.cc-snapshot-focus {
+  font-size: 0.82rem;
+  padding: 0.25rem 0.55rem;
 }
 .cc-snapshot-count-value {
   font-size: 1.45rem;
