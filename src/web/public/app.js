@@ -1831,16 +1831,92 @@ function zohoWriteSucceeded(result) {
   return Boolean(write.ok);
 }
 
+function contextZohoWriteFeedback(result) {
+  const write = result?.zohoWrite;
+  if (!write?.attempted) {
+    return { complete: true, message: null, retryLabel: null };
+  }
+  const contact = write.contact || {};
+  const deal = write.deal || {};
+  const contactWritten = Boolean(contact.ok && contact.noteId);
+  const dealWritten = Boolean(deal.ok && deal.noteId);
+  const contactFailed = Boolean(contact.attempted && !contact.ok);
+  const dealFailed = Boolean(deal.attempted && !deal.ok);
+  const dealSkipped = Boolean(deal.skipped);
+
+  if (!contactFailed && !dealFailed) {
+    return { complete: true, message: null, retryLabel: null };
+  }
+  if (contactFailed && dealFailed) {
+    return {
+      complete: false,
+      message: "Saved · Contact and deal notes failed",
+      retryLabel: "Retry Zoho notes",
+    };
+  }
+  if (contactFailed && dealWritten) {
+    return {
+      complete: false,
+      message: "Saved · Contact note failed — deal note written",
+      retryLabel: "Retry contact note",
+    };
+  }
+  if (contactFailed && dealSkipped) {
+    return {
+      complete: false,
+      message: "Saved · Contact note failed — deal note not written",
+      retryLabel: "Retry contact note",
+    };
+  }
+  if (dealFailed && contactWritten) {
+    return {
+      complete: false,
+      message: "Saved · Contact note written — deal note failed",
+      retryLabel: "Retry deal note",
+    };
+  }
+  if (dealFailed && !contact.attempted) {
+    return {
+      complete: false,
+      message: "Saved · Deal note failed",
+      retryLabel: "Retry deal note",
+    };
+  }
+  if (contactFailed) {
+    return {
+      complete: false,
+      message: "Saved · Contact note failed",
+      retryLabel: "Retry contact note",
+    };
+  }
+  return {
+    complete: false,
+    message: "Saved · Zoho note failed",
+    retryLabel: "Retry",
+  };
+}
+
+function contextZohoSuccessMessage(result) {
+  const write = result?.zohoWrite;
+  if (!write?.attempted) return "Context saved — queue unchanged.";
+  const contactWritten = Boolean(write.contact?.ok && write.contact.noteId);
+  const dealWritten = Boolean(write.deal?.ok && write.deal.noteId);
+  if (contactWritten && dealWritten) return "Context saved · Contact and deal notes written.";
+  if (contactWritten) return "Context saved · Contact note written.";
+  if (dealWritten) return "Context saved · Deal note written.";
+  return "Context saved and written to Zoho.";
+}
+
 const ZOHO_WRITE_FAILURE_MESSAGE = "Saved · Zoho note failed — Retry";
 
 function zohoWriteFailureMessage() {
   return ZOHO_WRITE_FAILURE_MESSAGE;
 }
 
-function appendZohoRetryButton(body, status, retryFn) {
+function appendZohoRetryButton(body, status, retryFn, label = "Retry") {
   const existing = body.querySelector(".zoho-retry-btn");
   if (existing) existing.remove();
-  const retry = el("button", { type: "button", class: "secondary zoho-retry-btn", text: "Retry" });
+  const retry = el("button", { type: "button", class: "secondary zoho-retry-btn", text: label });
   retry.addEventListener("click", async () => {
     retry.disabled = true;
     try {
@@ -2406,25 +2482,29 @@ function openManageDialog(item, step = "menu") {
       save.disabled = true;
       try {
         const data = await saveOperatorDecision(item, { decision_type: "CONTEXT_ADDED", operator_note: note.value.trim() });
-        if (!zohoWriteSucceeded(data)) {
-          status.textContent = zohoWriteFailureMessage();
-          appendZohoRetryButton(body, status, async () => {
+        const feedback = contextZohoWriteFeedback(data);
+        if (!feedback.complete) {
+          status.textContent = feedback.message;
+          const retryContextZoho = async () => {
             const retried = await api(`/api/operator-decisions/${encodeURIComponent(data.decision.id)}/retry-zoho`, {
               method: "POST",
               body: JSON.stringify({ zoho_write: zohoWriteContextFromWatchItem(item) }),
             });
-            if (!zohoWriteSucceeded(retried)) {
-              status.textContent = zohoWriteFailureMessage();
+            const retryFeedback = contextZohoWriteFeedback(retried);
+            if (!retryFeedback.complete) {
+              status.textContent = retryFeedback.message;
+              appendZohoRetryButton(body, status, retryContextZoho, retryFeedback.retryLabel || "Retry");
               return;
             }
             dialog.close();
-            $("cc-status").textContent = "Context saved and written to Zoho.";
-          });
+            $("cc-status").textContent = contextZohoSuccessMessage(retried);
+          };
+          appendZohoRetryButton(body, status, retryContextZoho, feedback.retryLabel || "Retry");
           return;
         }
         dialog.close();
         $("cc-status").textContent = data.writtenToZoho
-          ? "Context saved and written to Zoho."
+          ? contextZohoSuccessMessage(data)
           : "Context saved — queue unchanged.";
       } catch (error) {
         status.textContent = operatorMessage(error);
