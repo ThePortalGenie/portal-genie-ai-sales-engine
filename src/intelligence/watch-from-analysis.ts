@@ -18,6 +18,12 @@ import { applyPriority, classifyExecutability, decideActionTiming, overrideActio
 import { classifyStalled } from "./stalled-engine.js";
 import { classifyDealProduct } from "./org-graph.js";
 import { classifyActionabilityKind } from "./actionability.js";
+import {
+  classifyProductRegistration,
+  refineActionForRegistration,
+  registrationAwareSummary,
+  registrationAwareWhy,
+} from "./product-registration.js";
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -295,7 +301,9 @@ export function watchItemsFromAnalysis(
     };
     const signals = deterministicWatchSignals(evidence);
     const stalled = classifyStalled(evidence);
+    const registration = classifyProductRegistration(product, productDeals);
     let action: WatchAction = overrideAction(evidence, asWatchAction(profile?.recommended_action));
+    action = refineActionForRegistration(action, registration);
     if (stalled.state === "WAITING_ON_CUSTOMER") action = "WAIT";
     if (scheduledInstant === "FUTURE") action = "WAIT";
     if (historicalLostOnly && stalled.state !== "WAITING_ON_US") action = "NO_ACTION";
@@ -339,6 +347,8 @@ export function watchItemsFromAnalysis(
       organisation_name: options.organisationName,
       product_scope: product,
       relationship_state: relationship,
+      product_registration_state: registration.state,
+      product_registration_provenance: registration.provenance,
       primary_contact_id: selected?.recordId,
       primary_contact_name: selected?.name ?? graph?.selectedContactName,
       recommended_contact_id: contact.id,
@@ -356,8 +366,8 @@ export function watchItemsFromAnalysis(
       action_timing: timing,
       action_due_at: commitment.at,
       confidence: profile?.confidence ?? "LOW",
-      why_this_action: why,
-      commercial_summary: summary,
+      why_this_action: registrationAwareWhy(why, registration),
+      commercial_summary: registrationAwareSummary(summary, product, registration),
       last_meaningful_activity_at: lastMeaningful,
       next_commitment_at: commitment.at,
       stalled_state: stalled.state,

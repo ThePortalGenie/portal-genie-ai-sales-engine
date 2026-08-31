@@ -120,6 +120,8 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /Control history/);
     assert.match(js, /CONTEXT_ADDED/);
     assert.match(js, /Context saved — queue unchanged/);
+    assert.match(js, /watchItemProductLabel/);
+    assert.match(js, /Registered/);
   });
 });
 

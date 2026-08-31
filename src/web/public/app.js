@@ -224,6 +224,13 @@ function productScopeLabel(scope) {
   return scope || "—";
 }
 
+function watchItemProductLabel(item) {
+  const product = productScopeLabel(item.product_scope);
+  if (item.product_registration_state === "REGISTERED") return `${product} · Registered`;
+  if (item.product_registration_state === "NOT_REGISTERED") return `${product} · Prospect`;
+  return product;
+}
+
 async function renderM365Connections() {
   const card = $("m365-connection-card");
   if (!card) return;
@@ -2409,7 +2416,7 @@ function renderCommandCentre() {
     const card = el("article", { class: "cc-item", tabindex: "0", role: "link", "data-watch-id": item.id });
     card.append(el("div", { class: "badge-row" }, [
       el("span", { class: "pill", text: item.priority }),
-      el("span", { class: "pill", text: words(item.product_scope) }),
+      el("span", { class: "pill", text: watchItemProductLabel(item) }),
       el("span", { class: "pill", text: words(item.stalled_state) }),
     ]));
     card.append(el("strong", { text: item.organisation_name || "UNKNOWN" }));

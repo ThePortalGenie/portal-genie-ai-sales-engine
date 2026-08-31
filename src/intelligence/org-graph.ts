@@ -45,6 +45,9 @@ export function deriveContactRole(options: {
 }
 
 export function classifyDealProduct(name?: string, pipeline?: string): ProductId | "UNKNOWN" {
+  const pipelineText = (pipeline ?? "").trim();
+  if (/^the portal genie$/i.test(pipelineText)) return "PORTAL_GENIE";
+  if (/^nagging panda$/i.test(pipelineText)) return "NAGGING_PANDA";
   const text = `${name ?? ""} ${pipeline ?? ""}`;
   if (/\bnagging panda\b/i.test(text)) return "NAGGING_PANDA";
   if (/\bportal genie\b|\bfirm partner\b/i.test(text)) return "PORTAL_GENIE";

@@ -1,0 +1,27 @@
+{
+  "PORTAL_GENIE": {
+    "pipeline_names": ["The Portal Genie"],
+    "registered_stages": [
+      "Freemium",
+      "In Trial - 30 Days",
+      "Event Special 30 Days + 70% for 3 Months",
+      "Event Special 60 Days +70% for 3 Months",
+      "Firm Partner Deal - New"
+    ],
+    "pre_registration_stages": [
+      "Demo Stage",
+      "Demo Decision Maker",
+      "Proposal Review"
+    ]
+  },
+  "NAGGING_PANDA": {
+    "pipeline_names": ["Nagging Panda"],
+    "registered_stages": [
+      "Awaiting Payment",
+      "Closed Won - Single License"
+    ],
+    "pre_registration_stages": [
+      "Proposal Review"
+    ]
+  }
+}

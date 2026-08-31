@@ -1,5 +1,6 @@
 import type { ConfidenceLevel, NextAction, SalesMotion } from "./commercial-intelligence.js";
 import type { ProductId, ProductRelationshipState } from "./product-relationship.js";
+import type { ProductRegistrationProvenance, ProductRegistrationState } from "./product-registration.js";
 
 export const ACTION_TIMINGS = [
   "ACT_NOW",
@@ -148,6 +149,9 @@ export type CommercialWatchItem = {
   organisation_name: string;
   product_scope: ProductId;
   relationship_state: ProductRelationshipState | "UNCLEAR";
+  /** Deterministic CRM Deal-stage registration classification for this product. */
+  product_registration_state?: ProductRegistrationState;
+  product_registration_provenance?: ProductRegistrationProvenance;
   primary_contact_id?: string;
   primary_contact_name?: string;
   recommended_contact_id?: string;
