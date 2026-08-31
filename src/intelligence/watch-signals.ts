@@ -1,11 +1,13 @@
 import type { CommandCentreThresholds, WatchSignal } from "../domain/commercial-watch.js";
 import { DEFAULT_COMMAND_CENTRE_THRESHOLDS } from "../domain/commercial-watch.js";
+import type { ProductId } from "../domain/product-relationship.js";
 import { classifyFollowUpDate, classifyInstant, daysBetweenCalendar } from "./calendar-date.js";
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 export type WatchEvidenceInput = {
   asOf: string;
+  product?: ProductId;
   unansweredOutboundAttempts: number;
   lastMeaningfulActivityAt?: string;
   nextCommitmentAt?: string;
@@ -116,14 +118,21 @@ export function deterministicWatchSignals(input: WatchEvidenceInput): {
         : "Sales Deal is closed. This is not automatically the current customer relationship.",
     });
   }
-  if (input.usageDatasetAvailable === false && input.usageUnknown) {
+  if (input.product === "NAGGING_PANDA") {
+    usage.push({
+      code: "USAGE_UNAVAILABLE",
+      message: "Nagging Panda usage telemetry is not integrated in Sales Engine.",
+    });
+  } else if (input.usageDatasetAvailable === false && input.usageUnknown) {
     dataQuality.push({
       code: "USAGE_DATASET_UNAVAILABLE",
-      message: "No Portal Genie usage dataset is imported. USAGE UNKNOWN is not an instruction to check usage now.",
+      message: "No Portal Genie usage dataset is imported. Missing usage data is not a customer action.",
     });
   }
 
-  if (input.usageUnknown) {
+  if (input.product === "NAGGING_PANDA") {
+    // Nagging Panda usage is handled above; do not attach Portal Genie usage semantics.
+  } else if (input.usageUnknown) {
     usage.push({ code: "USAGE_UNKNOWN", message: "Portal Genie usage is unknown, not zero." });
   } else {
     if (input.usageActive) usage.push({ code: "ACTIVE_PRODUCT_USAGE", message: "Imported usage shows product activity." });

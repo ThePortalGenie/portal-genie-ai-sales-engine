@@ -72,7 +72,7 @@ export function classifyExecutability(input: {
 }): ActionExecutability {
   if (input.action === "NO_ACTION" || input.action === "NURTURE") return "NO_ACTION_REQUIRED";
   if (input.action === "USAGE_CHECK" && (input.usageDatasetAvailable === false || input.usageUnknown)) {
-    return "DATA_REQUIRED";
+    return "NO_ACTION_REQUIRED";
   }
   if (input.timing === "WAIT_UNTIL" || (input.action === "WAIT" && input.stalledState === "SCHEDULED_FOLLOW_UP")) {
     return "WAITING_FOR_TIME";

@@ -543,11 +543,12 @@ test("executability owns P0/P1: wait, customer, and data-required are not the ac
   assert.equal(
     classifyExecutability({
       action: "USAGE_CHECK",
-      timing: "ACT_NOW",
+      timing: "NO_ACTION_REQUIRED",
       stalledState: "NOT_STALLED",
       usageDatasetAvailable: false,
+      usageUnknown: true,
     }),
-    "DATA_REQUIRED",
+    "NO_ACTION_REQUIRED",
   );
   assert.equal(
     priorityBand({
@@ -582,13 +583,14 @@ test("executability owns P0/P1: wait, customer, and data-required are not the ac
   );
   assert.equal(
     priorityBand({
-      action_timing: "ACT_NOW",
-      next_best_action: "USAGE_CHECK",
+      action_timing: "NO_ACTION_REQUIRED",
+      next_best_action: "NO_ACTION",
       stalled_state: "NOT_STALLED",
       liveDeal: false,
-      executability: "DATA_REQUIRED",
+      executability: "NO_ACTION_REQUIRED",
+      actionability_kind: "NO_ACTION",
     }),
-    "P4",
+    "P5",
   );
 });
 
@@ -717,11 +719,11 @@ test("historical Closed Won does not force NO_ACTION the way Closed Lost does", 
     { organisationId: "domain:rslv.test", organisationName: "Kirstin Resolve", reuse: "reused", asOf: AS_OF },
   );
   assert.equal(item?.product_scope, "NAGGING_PANDA");
-  assert.notEqual(item?.next_best_action, "NO_ACTION");
-  assert.equal(item?.next_best_action, "USAGE_CHECK");
-  assert.equal(item?.executability, "DATA_REQUIRED");
-  assert.notEqual(item?.priority, "P0");
-  assert.notEqual(item?.priority, "P1");
+  assert.equal(item?.next_best_action, "NO_ACTION");
+  assert.equal(item?.executability, "NO_ACTION_REQUIRED");
+  assert.equal(item?.actionability_kind, "NO_ACTION");
+  assert.equal(item?.priority, "P5");
+  assert.doesNotMatch(item?.why_this_action ?? "", /Portal Genie/i);
   assert.ok(!item?.opportunity_signals.some((signal) => signal.code === "HISTORICAL_DEAL_ONLY"));
   assert.match(item?.commercial_summary ?? "", /current customer relationship/i);
   assert.doesNotMatch(item?.commercial_summary ?? "", /historical only/i);
@@ -814,7 +816,7 @@ test("usage unknown is labelled, not treated as zero usage", () => {
   assert.match(item?.usage_signals.find((signal) => signal.code === "USAGE_UNKNOWN")?.message ?? "", /not zero/i);
 });
 
-test("USAGE_CHECK with no imported dataset is DATA_REQUIRED and not P0/P1", () => {
+test("USAGE_CHECK with no imported dataset becomes NO_ACTION, not sales work", () => {
   const [item] = watchItemsFromAnalysis(
     stored({
       profile: validSampleProfile({
@@ -830,16 +832,16 @@ test("USAGE_CHECK with no imported dataset is DATA_REQUIRED and not P0/P1", () =
       usageDatasetAvailable: false,
     },
   );
-  assert.equal(item?.next_best_action, "USAGE_CHECK");
-  assert.equal(item?.executability, "DATA_REQUIRED");
-  assert.notEqual(item?.priority, "P0");
-  assert.notEqual(item?.priority, "P1");
+  assert.equal(item?.next_best_action, "NO_ACTION");
+  assert.equal(item?.executability, "NO_ACTION_REQUIRED");
+  assert.equal(item?.actionability_kind, "NO_ACTION");
+  assert.equal(item?.priority, "P5");
   assert.ok(item?.usage_signals.some((signal) => signal.code === "USAGE_UNKNOWN"));
   assert.ok(item?.data_quality_signals.some((signal) => signal.code === "USAGE_DATASET_UNAVAILABLE"));
-  assert.match(item?.why_this_action ?? "", /not a check-usage-now/i);
+  assert.match(item?.why_this_action ?? "", /not a customer action/i);
 });
 
-test("USAGE_CHECK stays DATA_REQUIRED when org usage is unknown even if a file exists", () => {
+test("USAGE_CHECK with unknown org usage becomes NO_ACTION even if a file exists", () => {
   const [item] = watchItemsFromAnalysis(
     stored({
       profile: validSampleProfile({ recommended_action: "USAGE_CHECK" }),
@@ -852,10 +854,10 @@ test("USAGE_CHECK stays DATA_REQUIRED when org usage is unknown even if a file e
       usageDatasetAvailable: true,
     },
   );
-  assert.equal(item?.next_best_action, "USAGE_CHECK");
-  assert.equal(item?.executability, "DATA_REQUIRED");
-  assert.notEqual(item?.priority, "P0");
-  assert.notEqual(item?.priority, "P1");
+  assert.equal(item?.next_best_action, "NO_ACTION");
+  assert.equal(item?.executability, "NO_ACTION_REQUIRED");
+  assert.equal(item?.actionability_kind, "NO_ACTION");
+  assert.equal(item?.priority, "P5");
   assert.ok(item?.usage_signals.some((signal) => signal.code === "USAGE_UNKNOWN"));
 });
 
@@ -867,7 +869,7 @@ test("unavailable usage is not replaced with an invented chase action", () => {
     }),
     { organisationId: "domain:anth.test", organisationName: "Anthurico Accountants", reuse: "reused", asOf: AS_OF },
   );
-  assert.equal(item?.next_best_action, "USAGE_CHECK");
+  assert.equal(item?.next_best_action, "NO_ACTION");
   assert.notEqual(item?.next_best_action, "PHONE_CALL");
   assert.notEqual(item?.next_best_action, "PERSONAL_EMAIL");
 });
@@ -1575,12 +1577,13 @@ test("structured daily brief separates customer actions, wait, research, and com
         action_timing: "ACT_NOW",
       }),
       watch({
-        id: "kirstin:PORTAL_GENIE",
+        id: "kirstin:NAGGING_PANDA",
         organisation_name: "Kirstin Resolve",
-        priority: "P4",
-        actionability_kind: "DATA_REQUIRED",
-        next_best_action: "USAGE_CHECK",
-        executability: "DATA_REQUIRED",
+        product_scope: "NAGGING_PANDA",
+        priority: "P5",
+        actionability_kind: "NO_ACTION",
+        next_best_action: "NO_ACTION",
+        executability: "NO_ACTION_REQUIRED",
       }),
       watch({
         id: "rae:PORTAL_GENIE",
@@ -1597,7 +1600,7 @@ test("structured daily brief separates customer actions, wait, research, and com
   assert.equal(brief.do_first_actions.length, 1);
   assert.equal(brief.do_first_actions[0]?.organisation_name, "Customer Co");
   assert.ok(brief.research_items.some((item) => item.organisation_name === "Acticem"));
-  assert.ok(brief.research_items.some((item) => item.organisation_name === "Kirstin Resolve"));
+  assert.ok(!brief.research_items.some((item) => item.organisation_name === "Kirstin Resolve"));
   assert.ok(brief.wait_items.some((item) => item.organisation_name === "Rae Accounting"));
   assert.ok(brief.commercial_watch.length >= 1 && brief.commercial_watch.length <= 5);
   assert.doesNotMatch(brief.do_first_actions.map((item) => item.organisation_name).join(" "), /Acticem|Kirstin/i);

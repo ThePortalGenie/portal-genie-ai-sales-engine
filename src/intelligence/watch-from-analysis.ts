@@ -24,6 +24,7 @@ import {
   registrationAwareSummary,
   registrationAwareWhy,
 } from "./product-registration.js";
+import { productUsageContext, suppressUsageCheckWithoutTelemetry } from "./usage-action.js";
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -276,8 +277,10 @@ export function watchItemsFromAnalysis(
         ];
     const commitment = pickNextCommitment(productEvents, extraFuture, asOf, thresholds.timeZone);
     const scheduledInstant = classifyInstant(commitment.at, asOf, thresholds.timeZone);
+    const usageContext = productUsageContext(product, { usageDatasetAvailable, usageUnknown });
     const evidence: WatchEvidenceInput = {
       asOf,
+      product,
       unansweredOutboundAttempts: unanswered,
       lastMeaningfulActivityAt: lastMeaningful,
       nextCommitmentAt: commitment.at,
@@ -288,8 +291,8 @@ export function watchItemsFromAnalysis(
       currentProductRelationship,
       meetingMissedNoReschedule: meetingMissed,
       meetingAgreed,
-      usageUnknown: product === "PORTAL_GENIE" ? usageUnknown : true,
-      usageDatasetAvailable,
+      usageUnknown: usageContext.usageUnknown,
+      usageDatasetAvailable: usageContext.usageDatasetAvailable,
       usageActive: product === "PORTAL_GENIE" ? usageActive : false,
       usageGrowing: product === "PORTAL_GENIE" ? usageGrowing : false,
       accountingConnected: product === "PORTAL_GENIE" ? accountingConnected : false,
@@ -307,13 +310,15 @@ export function watchItemsFromAnalysis(
     if (stalled.state === "WAITING_ON_CUSTOMER") action = "WAIT";
     if (scheduledInstant === "FUTURE") action = "WAIT";
     if (historicalLostOnly && stalled.state !== "WAITING_ON_US") action = "NO_ACTION";
+    const usageResolution = suppressUsageCheckWithoutTelemetry(product, action, usageContext);
+    action = usageResolution.action;
     const timing = decideActionTiming(evidence, action);
     const executability = classifyExecutability({
       action,
       timing,
       stalledState: stalled.state,
-      usageDatasetAvailable,
-      usageUnknown: product === "PORTAL_GENIE" ? usageUnknown : true,
+      usageDatasetAvailable: usageContext.usageDatasetAvailable,
+      usageUnknown: usageContext.usageUnknown,
     });
     const actionability_kind = classifyActionabilityKind({
       action,
@@ -323,12 +328,9 @@ export function watchItemsFromAnalysis(
     const omitContact = action === "NO_ACTION" && historicalLostOnly;
     const contact = productRecommendedContact(graph, productDeals, productEvents, omitContact, profile?.best_contact);
     const whenLabel = commitment.at ? formatZonedDateTime(commitment.at, thresholds.timeZone) ?? commitment.at : undefined;
-    const why =
-      executability === "DATA_REQUIRED"
-        ? usageDatasetAvailable
-          ? "Portal Genie usage is unknown for this organisation. USAGE UNKNOWN is not a check-usage-now sales action."
-          : "No Portal Genie usage dataset is imported. USAGE UNKNOWN is not a check-usage-now sales action."
-        : scheduledInstant === "FUTURE"
+    const why = usageResolution.suppressed
+      ? usageResolution.reason ?? "Missing usage evidence is not a customer action."
+      : scheduledInstant === "FUTURE"
           ? `Wait until ${whenLabel}. Explicit commitment overrides generic urgency. Do not chase before that time.`
           : stalled.state === "WAITING_ON_CUSTOMER"
             ? stalled.reasons[0] ?? "Await a customer response. Do not chase again today."
@@ -375,7 +377,7 @@ export function watchItemsFromAnalysis(
       urgency_signals: signals.urgency,
       opportunity_signals: signals.opportunity,
       risk_signals: signals.risk,
-      usage_signals: product === "PORTAL_GENIE" ? signals.usage : [{ code: "USAGE_UNKNOWN", message: "Nagging Panda usage is not in this import." }],
+      usage_signals: signals.usage,
       data_quality_signals: signals.dataQuality,
       evidence_refs: (analysis.evidence ?? []).map((item) => item.id).slice(0, 12),
       analysis_generated_at: analysis.analysedAt,
