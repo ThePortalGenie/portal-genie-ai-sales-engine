@@ -15,6 +15,7 @@ export const ZOHO_DOCS = {
   relatedLists: "https://www.zoho.com/crm/developer/docs/api/v8/related-list-meta.html",
   relatedRecords: "https://www.zoho.com/crm/developer/docs/api/v8/get-related-records.html",
   notes: "https://www.zoho.com/crm/developer/docs/api/v8/get-notes.html",
+  createNotes: "https://www.zoho.com/crm/developer/docs/api/v8/create-notes.html",
   emails: "https://www.zoho.com/crm/developer/docs/api/v8/get-email-rel-list.html",
   viewEmail: "https://www.zoho.com/crm/developer/docs/api/v8/view-email.html",
   tags: "https://www.zoho.com/crm/developer/docs/api/v8/get-tag-list.html",
@@ -30,6 +31,16 @@ export const READ_ONLY_SCOPES = [
   "ZohoSearch.securesearch.READ",
   "ZohoCRM.org.READ",
 ] as const;
+
+/** Minimum additional scope for Sales Engine write-back (Notes only). */
+export const NOTES_CREATE_SCOPE = "ZohoCRM.modules.notes.CREATE" as const;
+
+export const WRITE_BACK_SCOPES = [...READ_ONLY_SCOPES, NOTES_CREATE_SCOPE] as const;
+
+export const SALES_ENGINE_NOTE_TITLES = {
+  interaction: "Sales Engine interaction",
+  context: "Sales Engine context",
+} as const;
 
 export const ACCOUNTS_URLS = {
   US: "https://accounts.zoho.com",

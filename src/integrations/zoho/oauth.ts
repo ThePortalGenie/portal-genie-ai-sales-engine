@@ -1,5 +1,5 @@
 import { ZohoAuthError } from "./errors.js";
-import { READ_ONLY_SCOPES, TOKEN_EXPIRY_SKEW_MS } from "./constants.js";
+import { READ_ONLY_SCOPES, TOKEN_EXPIRY_SKEW_MS, WRITE_BACK_SCOPES } from "./constants.js";
 import type { Logger } from "../../logging/logger.js";
 import type { ZohoEnv } from "../../config/env.js";
 
@@ -43,6 +43,10 @@ function parseTokenResponse(json: unknown): {
     expires_in?: number;
     error?: string;
   };
+}
+
+function activeScopes(): readonly string[] {
+  return process.env.ZOHO_WRITE_ENABLED === "true" ? WRITE_BACK_SCOPES : READ_ONLY_SCOPES;
 }
 
 export class ZohoOAuth {
@@ -161,7 +165,7 @@ export class ZohoOAuth {
 
   authorizationUrl(state: string): string {
     const url = new URL(`${this.env.accountsUrl}/oauth/v2/auth`);
-    url.searchParams.set("scope", READ_ONLY_SCOPES.join(","));
+    url.searchParams.set("scope", activeScopes().join(","));
     url.searchParams.set("client_id", this.env.clientId);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("access_type", "offline");

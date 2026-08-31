@@ -1733,6 +1733,44 @@ function isoDateDaysFromNow(days) {
   return date.toISOString().slice(0, 10);
 }
 
+function zohoWriteContextFromWatchItem(item) {
+  return {
+    organisation_key: item.organisation_id,
+    source_record: item.source_record,
+    contact_ids: item.contact_ids || [],
+    lead_ids: item.lead_ids || [],
+  };
+}
+
+function zohoWriteSucceeded(result) {
+  const write = result?.zohoWrite;
+  if (!write?.attempted) return true;
+  return Boolean(write.ok);
+}
+
+const ZOHO_WRITE_FAILURE_MESSAGE = "Saved · Zoho note failed — Retry";
+
+function zohoWriteFailureMessage() {
+  return ZOHO_WRITE_FAILURE_MESSAGE;
+}
+
+function appendZohoRetryButton(body, status, retryFn) {
+  const existing = body.querySelector(".zoho-retry-btn");
+  if (existing) existing.remove();
+  const retry = el("button", { type: "button", class: "secondary zoho-retry-btn", text: "Retry" });
+  retry.addEventListener("click", async () => {
+    retry.disabled = true;
+    try {
+      await retryFn();
+    } catch (error) {
+      status.textContent = operatorMessage(error);
+    } finally {
+      retry.disabled = false;
+    }
+  });
+  body.append(retry);
+}
+
 function decisionPayloadFromWatchItem(item, fields = {}) {
   if (!item.recommendation_fingerprint) {
     throw new Error("Recommendation fingerprint missing. Rebuild the Command Centre before managing this item.");
@@ -1748,6 +1786,7 @@ function decisionPayloadFromWatchItem(item, fields = {}) {
       recommended_contact_id: item.recommended_contact_id,
       next_best_action: item.next_best_action,
     },
+    zoho_write: zohoWriteContextFromWatchItem(item),
     ...fields,
   };
 }
@@ -1892,8 +1931,9 @@ async function saveOperatorDecision(item, fields) {
   if (body.operator_note && body.operator_note.length > OPERATOR_NOTE_MAX) {
     throw new Error(`Note must be ${OPERATOR_NOTE_MAX} characters or fewer.`);
   }
-  await api("/api/operator-decisions", { method: "POST", body: JSON.stringify(body) });
+  const data = await api("/api/operator-decisions", { method: "POST", body: JSON.stringify(body) });
   await refreshCcControl();
+  return data;
 }
 
 async function refreshCcControl() {
@@ -1960,8 +2000,10 @@ function renderManageMenu(body, item, status) {
   }
 }
 
-function renderSalesEventCapture(body, item, status, onSaved) {
-  body.append(el("p", { class: "muted", text: "Record what actually happened with the customer. This is saved as a Sales Event, not written to Zoho." }));
+function renderSalesEventCapture(body, item, status, completionDecisionType) {
+  body.append(el("p", { class: "muted", text: "Record what actually happened with the customer. This saves locally and writes a Zoho Note when write-back is enabled." }));
+  let lastSavedEvent = null;
+  const dialog = ensureManageDialog();
   const contactSelect = el("select");
   contactSelect.append(el("option", { value: "", text: "Organisation level" }));
   for (const person of knownPeopleForWatchItem(item)) {
@@ -2013,9 +2055,37 @@ function renderSalesEventCapture(body, item, status, onSaved) {
         summary: summary.value.trim(),
         next_step: nextStep.value.trim(),
         follow_up_date: followUp.value || "",
+        zoho_write: zohoWriteContextFromWatchItem(item),
       };
       const data = await api("/api/sales-events", { method: "POST", body: JSON.stringify(eventBody) });
-      await onSaved(data.event);
+      lastSavedEvent = data.event;
+      await saveOperatorDecision(item, {
+        decision_type: completionDecisionType,
+        linked_sales_event_id: data.event.id,
+      });
+      if (!zohoWriteSucceeded(data)) {
+        status.textContent = zohoWriteFailureMessage();
+        appendZohoRetryButton(body, status, async () => {
+          const retried = await api(`/api/sales-events/${encodeURIComponent(lastSavedEvent.id)}/retry-zoho`, {
+            method: "POST",
+            body: JSON.stringify({ zoho_write: zohoWriteContextFromWatchItem(item) }),
+          });
+          lastSavedEvent = retried.event;
+          if (!zohoWriteSucceeded(retried)) {
+            status.textContent = zohoWriteFailureMessage();
+            return;
+          }
+          dialog.close();
+          $("cc-status").textContent = "Customer interaction saved and written to Zoho.";
+        });
+        return;
+      }
+      dialog.close();
+      $("cc-status").textContent = data.writtenToZoho
+        ? "Customer interaction saved and written to Zoho."
+        : completionDecisionType === "ALREADY_HANDLED"
+          ? "Customer interaction recorded. Recommendation marked already handled."
+          : "Customer interaction saved and recommendation completed.";
     } catch (error) {
       status.textContent = operatorMessage(error);
     } finally {
@@ -2252,9 +2322,27 @@ function openManageDialog(item, step = "menu") {
       }
       save.disabled = true;
       try {
-        await saveOperatorDecision(item, { decision_type: "CONTEXT_ADDED", operator_note: note.value.trim() });
+        const data = await saveOperatorDecision(item, { decision_type: "CONTEXT_ADDED", operator_note: note.value.trim() });
+        if (!zohoWriteSucceeded(data)) {
+          status.textContent = zohoWriteFailureMessage();
+          appendZohoRetryButton(body, status, async () => {
+            const retried = await api(`/api/operator-decisions/${encodeURIComponent(data.decision.id)}/retry-zoho`, {
+              method: "POST",
+              body: JSON.stringify({ zoho_write: zohoWriteContextFromWatchItem(item) }),
+            });
+            if (!zohoWriteSucceeded(retried)) {
+              status.textContent = zohoWriteFailureMessage();
+              return;
+            }
+            dialog.close();
+            $("cc-status").textContent = "Context saved and written to Zoho.";
+          });
+          return;
+        }
         dialog.close();
-        $("cc-status").textContent = "Context saved — queue unchanged.";
+        $("cc-status").textContent = data.writtenToZoho
+          ? "Context saved and written to Zoho."
+          : "Context saved — queue unchanged.";
       } catch (error) {
         status.textContent = operatorMessage(error);
       } finally {
@@ -2300,11 +2388,7 @@ function openManageDialog(item, step = "menu") {
   }
 
   if (step === "done-customer") {
-    renderSalesEventCapture(body, item, status, async (event) => {
-      await saveOperatorDecision(item, { decision_type: "COMPLETED", linked_sales_event_id: event.id });
-      dialog.close();
-      $("cc-status").textContent = "Customer interaction saved and recommendation completed.";
-    });
+    renderSalesEventCapture(body, item, status, "COMPLETED");
     dialog.showModal();
     return;
   }
@@ -2343,11 +2427,7 @@ function openManageDialog(item, step = "menu") {
   }
 
   if (step === "already-handled-customer") {
-    renderSalesEventCapture(body, item, status, async (event) => {
-      await saveOperatorDecision(item, { decision_type: "ALREADY_HANDLED", linked_sales_event_id: event.id });
-      dialog.close();
-      $("cc-status").textContent = "Customer interaction recorded. Recommendation marked already handled.";
-    });
+    renderSalesEventCapture(body, item, status, "ALREADY_HANDLED");
     dialog.showModal();
   }
 }

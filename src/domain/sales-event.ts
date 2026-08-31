@@ -64,6 +64,8 @@ export type SalesEvent = {
   source: typeof SALES_EVENT_SOURCE;
   confidence: "HIGH";
   provenance: "OPERATOR_ENTERED_SALES_EVENT";
+  zoho_note_id?: string;
+  zoho_written_at?: string;
 };
 
 export class SalesEventValidationError extends Error {
@@ -157,6 +159,8 @@ export function parseSalesEventInput(input: SalesEventInput, existing?: SalesEve
     source: SALES_EVENT_SOURCE,
     confidence: "HIGH",
     provenance: "OPERATOR_ENTERED_SALES_EVENT",
+    zoho_note_id: existing?.zoho_note_id,
+    zoho_written_at: existing?.zoho_written_at,
   };
 }
 

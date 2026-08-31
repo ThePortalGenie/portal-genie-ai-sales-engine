@@ -74,6 +74,8 @@ export type OperatorDecision = {
   preferred_contact_name?: string;
   provenance: typeof OPERATOR_DECISION_PROVENANCE;
   explicit_quality_feedback?: QualityFeedbackKind;
+  zoho_note_id?: string;
+  zoho_written_at?: string;
 };
 
 export type QualityFeedback = {
@@ -288,6 +290,8 @@ export function parseOperatorDecisionInput(input: OperatorDecisionInput, existin
       "explicit_quality_feedback",
       QUALITY_FEEDBACK_KINDS,
     ),
+    zoho_note_id: existing?.zoho_note_id,
+    zoho_written_at: existing?.zoho_written_at,
   };
 }
 

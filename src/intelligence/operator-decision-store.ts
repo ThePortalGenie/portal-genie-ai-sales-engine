@@ -84,6 +84,21 @@ export function createOperatorDecision(input: OperatorDecisionInput): OperatorDe
   return decision;
 }
 
+export function attachOperatorDecisionZohoNote(id: string, zohoNoteId: string): OperatorDecision {
+  const store = readStore();
+  const index = store.decisions.findIndex((decision) => decision.id === id);
+  if (index < 0) throw new OperatorDecisionValidationError("Operator decision not found");
+  const existing = store.decisions[index]!;
+  const updated: OperatorDecision = {
+    ...existing,
+    zoho_note_id: zohoNoteId,
+    zoho_written_at: new Date().toISOString(),
+  };
+  store.decisions[index] = updated;
+  writeStore(store);
+  return updated;
+}
+
 export function supersedeOperatorDecision(
   id: string,
   input: OperatorDecisionInput,

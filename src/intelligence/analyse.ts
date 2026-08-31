@@ -13,6 +13,7 @@ import type { CommercialReasoner } from "./openai-reasoner.js";
 import { OpenAiReasonerError } from "./openai-reasoner.js";
 import { ProfileValidationError } from "./profile-schema.js";
 import { PROFILE_SCHEMA_VERSION } from "../domain/commercial-intelligence.js";
+import { salesEngineWrittenZohoNoteIds } from "../integrations/zoho/write-back.js";
 import { organisationKey } from "../domain/sales-event.js";
 import type { NormalizedUsageProfile } from "../domain/normalized-usage.js";
 import { loadImportedUsageProfiles, loadUsageImportMeta, matchUsageForOrganisation } from "./usage-match.js";
@@ -202,10 +203,12 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
     source: event.type,
   }));
   const graphDealSignals = dealSignalsFromGraphDeals(graph.deals);
+  const writtenNoteIds = salesEngineWrittenZohoNoteIds();
+  const crmNotes = graph.notes.filter((note) => !(note.id && writtenNoteIds.has(note.id)));
   const organisation = buildOrganisationEvidenceProfile({
     resolution: { ...resolution, members, evidence: resolution.evidence },
-    selectedNotes: graph.notes.length
-      ? graph.notes.map((note) => ({ id: note.id, title: note.title, content: note.content, at: note.at }))
+    selectedNotes: crmNotes.length
+      ? crmNotes.map((note) => ({ id: note.id, title: note.title, content: note.content, at: note.at }))
       : contact.notes,
     selectedDeals: graphDealSignals.count > 0 ? graphDealSignals : contact.deals,
     selectedEmails: {
@@ -225,8 +228,8 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
   if (graphDealSignals.count > 0) {
     organisation.deals = graphDealSignals;
   }
-  organisation.notes = graph.notes.length
-    ? graph.notes.map((note) => ({
+  organisation.notes = crmNotes.length
+    ? crmNotes.map((note) => ({
         id: note.id,
         title: note.title,
         content: note.content,
@@ -236,8 +239,8 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
     : organisation.notes;
 
   const reconstruction = reconstructFromSources({
-    notes: graph.notes.length
-      ? graph.notes.map((note) => ({
+    notes: crmNotes.length
+      ? crmNotes.map((note) => ({
           id: note.id,
           title: note.title,
           content: note.content,

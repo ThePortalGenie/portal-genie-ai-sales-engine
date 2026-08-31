@@ -6,7 +6,7 @@ import { loadCommercialProfile, openaiStatus, recordOperatorFeedback, runCommerc
 import { zohoRuntime } from "../services/zoho-runtime.js";
 import { m365Runtime } from "../services/m365-runtime.js";
 import { SalesEventValidationError } from "../domain/sales-event.js";
-import { createSalesEvent, deleteSalesEvent, listSalesEvents, updateSalesEvent } from "../intelligence/sales-event-store.js";
+import { createSalesEvent, deleteSalesEvent, getSalesEvent, listSalesEvents, updateSalesEvent, attachSalesEventZohoNote } from "../intelligence/sales-event-store.js";
 import { OperatorDecisionValidationError } from "../domain/operator-decision.js";
 import {
   createOperatorDecision,
@@ -14,7 +14,15 @@ import {
   listOperatorDecisions,
   revokeOperatorDecision,
   supersedeOperatorDecision,
+  attachOperatorDecisionZohoNote,
 } from "../intelligence/operator-decision-store.js";
+import { writerFromClient } from "../integrations/zoho/write-client.js";
+import {
+  parseZohoWriteContext,
+  resolveZohoNoteWriter,
+  writeContextNoteToZoho,
+  writeInteractionNoteToZoho,
+} from "../integrations/zoho/write-back.js";
 import { buildRelationshipView } from "../web/relationship-view.js";
 import { usageOverlayForDiagnostic } from "../web/usage-overlay.js";
 import { publicErrorMessage, redactSecrets } from "../security/redact.js";
@@ -63,6 +71,48 @@ function send(res: ServerResponse, status: number, body: unknown, type = "applic
 
 function sendError(res: ServerResponse, status: number, error: unknown): void {
   send(res, status, { error: publicErrorMessage(error) });
+}
+
+function productionZohoNoteWriter() {
+  try {
+    return writerFromClient(zohoRuntime.getWriteClient());
+  } catch {
+    return undefined;
+  }
+}
+
+function zohoWriteResponse(attempt: Awaited<ReturnType<typeof writeInteractionNoteToZoho>>) {
+  return {
+    writtenToZoho: attempt.ok && Boolean(attempt.noteId),
+    zohoWrite: attempt,
+  };
+}
+
+async function persistSalesEventZohoWrite(
+  event: ReturnType<typeof createSalesEvent>,
+  context: ReturnType<typeof parseZohoWriteContext>,
+) {
+  const attempt = await writeInteractionNoteToZoho(
+    event,
+    context,
+    resolveZohoNoteWriter(productionZohoNoteWriter()),
+  );
+  const saved = attempt.noteId && attempt.ok ? attachSalesEventZohoNote(event.id, attempt.noteId) : event;
+  return { event: saved, ...zohoWriteResponse(attempt) };
+}
+
+async function persistContextZohoWrite(
+  decision: ReturnType<typeof createOperatorDecision>,
+  context: ReturnType<typeof parseZohoWriteContext>,
+) {
+  const attempt = await writeContextNoteToZoho(
+    decision,
+    context,
+    resolveZohoNoteWriter(productionZohoNoteWriter()),
+  );
+  const saved =
+    attempt.noteId && attempt.ok ? attachOperatorDecisionZohoNote(decision.id, attempt.noteId) : decision;
+  return { decision: redactSecrets(saved), ...zohoWriteResponse(attempt) };
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -383,9 +433,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
     if (method === "POST" && url.pathname === "/api/sales-events") {
       const body = await readJson(req);
+      const zohoContext = parseZohoWriteContext(body.zoho_write);
+      delete body.zoho_write;
       try {
         const event = createSalesEvent(body);
-        send(res, 201, { event, writtenToZoho: false });
+        const result = await persistSalesEventZohoWrite(event, zohoContext);
+        send(res, 201, { ...result, openaiTriggered: false });
       } catch (error) {
         if (error instanceof SalesEventValidationError) {
           send(res, 400, { error: error.message });
@@ -393,6 +446,20 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         }
         throw error;
       }
+      return;
+    }
+
+    const salesEventRetryMatch = url.pathname.match(/^\/api\/sales-events\/([^/]+)\/retry-zoho$/);
+    if (salesEventRetryMatch && method === "POST") {
+      const eventId = decodeURIComponent(salesEventRetryMatch[1] ?? "");
+      const existing = getSalesEvent(eventId);
+      if (!existing) {
+        send(res, 404, { error: "Sales Event not found." });
+        return;
+      }
+      const body = await readJson(req);
+      const result = await persistSalesEventZohoWrite(existing, parseZohoWriteContext(body.zoho_write));
+      send(res, 200, { ...result, openaiTriggered: false });
       return;
     }
 
@@ -454,8 +521,15 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
     if (method === "POST" && url.pathname === "/api/operator-decisions") {
       const body = await readJson(req);
+      const zohoContext = parseZohoWriteContext(body.zoho_write);
+      delete body.zoho_write;
       try {
         const decision = createOperatorDecision(body);
+        if (decision.decision_type === "CONTEXT_ADDED") {
+          const result = await persistContextZohoWrite(decision, zohoContext);
+          send(res, 201, { ...result, openaiTriggered: false });
+          return;
+        }
         send(res, 201, { decision: redactSecrets(decision), openaiTriggered: false, writtenToZoho: false });
       } catch (error) {
         if (error instanceof OperatorDecisionValidationError) {
@@ -464,6 +538,20 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         }
         throw error;
       }
+      return;
+    }
+
+    const operatorDecisionRetryMatch = url.pathname.match(/^\/api\/operator-decisions\/([^/]+)\/retry-zoho$/);
+    if (operatorDecisionRetryMatch && method === "POST") {
+      const decisionId = decodeURIComponent(operatorDecisionRetryMatch[1] ?? "");
+      const existing = getOperatorDecision(decisionId);
+      if (!existing) {
+        send(res, 404, { error: "Operator decision not found." });
+        return;
+      }
+      const body = await readJson(req);
+      const result = await persistContextZohoWrite(existing, parseZohoWriteContext(body.zoho_write));
+      send(res, 200, { ...result, openaiTriggered: false });
       return;
     }
 

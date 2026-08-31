@@ -55,6 +55,22 @@ export function createSalesEvent(input: SalesEventInput): SalesEvent {
   return event;
 }
 
+export function attachSalesEventZohoNote(id: string, zohoNoteId: string): SalesEvent {
+  const store = readStore();
+  const index = store.events.findIndex((event) => event.id === id);
+  if (index < 0) throw new SalesEventValidationError("Sales Event not found");
+  const existing = store.events[index]!;
+  const updated: SalesEvent = {
+    ...existing,
+    zoho_note_id: zohoNoteId,
+    zoho_written_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  store.events[index] = updated;
+  writeStore(store);
+  return updated;
+}
+
 export function updateSalesEvent(id: string, input: SalesEventInput): SalesEvent {
   const store = readStore();
   const index = store.events.findIndex((event) => event.id === id);

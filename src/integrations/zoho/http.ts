@@ -109,4 +109,45 @@ export class ZohoHttp {
       };
     }
   }
+
+  async post(path: string, body: unknown): Promise<ZohoHttpResult> {
+    const apiDomain = await this.options.getApiDomain();
+    const url = new URL(path.startsWith("/") ? path : `/${path}`, `${apiDomain}/`);
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    const token = await this.options.getAccessToken();
+    const started = Date.now();
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    const durationMs = Date.now() - started;
+    const noContent = response.status === 204;
+    let json: unknown = null;
+    const text = noContent ? "" : await response.text();
+    if (text) {
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = { parseError: true, rawLength: text.length };
+      }
+    }
+
+    this.options.logger.info("zoho.crm.post", {
+      path: url.pathname,
+      status: response.status,
+      durationMs,
+    });
+
+    return {
+      ok: response.ok || noContent,
+      status: response.status,
+      noContent,
+      json,
+    };
+  }
 }

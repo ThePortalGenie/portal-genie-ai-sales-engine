@@ -7,11 +7,13 @@ import { createLogger, type Logger } from "../logging/logger.js";
 import { ZohoOAuth } from "../integrations/zoho/oauth.js";
 import { ZohoHttp } from "../integrations/zoho/http.js";
 import { ZohoCrmReadClient, type ZohoCrmReader } from "../integrations/zoho/client.js";
+import { ZohoCrmWriteClient } from "../integrations/zoho/write-client.js";
 import { runDiscovery } from "../integrations/zoho/discovery.js";
 import {
   DEFAULT_EMAIL_BODY_FETCH_LIMIT,
   DEFAULT_RELATED_PAGE_SIZE,
   READ_ONLY_SCOPES,
+  WRITE_BACK_SCOPES,
 } from "../integrations/zoho/constants.js";
 import { asJsonObject } from "../integrations/zoho/http.js";
 import { normalizeZohoEmail, prospectEmailsFromRecord } from "../integrations/zoho/normalize-email.js";
@@ -41,6 +43,7 @@ type Runtime = {
   env: ZohoEnv;
   oauth: ZohoOAuth;
   client: ZohoCrmReadClient;
+  writeClient: ZohoCrmWriteClient;
   logger: Logger;
 };
 
@@ -79,7 +82,7 @@ export class ZohoRuntime {
         getApiDomain: () => oauth.getApiDomain(),
         logger,
       });
-      return { env, oauth, client: new ZohoCrmReadClient(http), logger };
+      return { env, oauth, client: new ZohoCrmReadClient(http), writeClient: new ZohoCrmWriteClient(http), logger };
     } catch (error) {
       if (error instanceof ConfigurationError) {
         return { error: error.message, missingRefresh: error.message.includes("ZOHO_REFRESH_TOKEN") };
@@ -88,7 +91,7 @@ export class ZohoRuntime {
     }
   }
 
-  getClient(): { client: ZohoCrmReader; oauth: ZohoOAuth; env: ZohoEnv } {
+  getClient(): { client: ZohoCrmReader; oauth: ZohoOAuth; env: ZohoEnv; writeClient: ZohoCrmWriteClient } {
     if (this.runtime) {
       return this.runtime;
     }
@@ -98,6 +101,14 @@ export class ZohoRuntime {
     }
     this.runtime = loaded;
     return loaded;
+  }
+
+  getWriteClient(): ZohoCrmWriteClient {
+    return this.getClient().writeClient;
+  }
+
+  configuredScopes(): readonly string[] {
+    return process.env.ZOHO_WRITE_ENABLED === "true" ? WRITE_BACK_SCOPES : READ_ONLY_SCOPES;
   }
 
   async connectionStatus(): Promise<ZohoConnectionView> {
@@ -111,7 +122,7 @@ export class ZohoRuntime {
     const base: ZohoConnectionView = {
       status: "not_connected",
       dataCentre,
-      capabilities: [...READ_ONLY_SCOPES],
+      capabilities: [...this.configuredScopes()],
       clientIdConfigured,
       clientSecretConfigured,
       refreshTokenConfigured,
