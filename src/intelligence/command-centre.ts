@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ZohoCrmReader } from "../integrations/zoho/client.js";
 import type {
   CommandCentreThresholds,
+  CommercialWatchItem,
   OrganisationCluster,
   PortfolioFailure,
   PortfolioSnapshot,
@@ -27,9 +28,12 @@ import { writeLastScan, writePortfolioSnapshot } from "./portfolio-store.js";
 import { usageImportIsNewerThan } from "./usage-match.js";
 import {
   COMMAND_CENTRE_SELECTION_METHOD,
+  candidateAuditForSelection,
+  computeUniverseAuditStats,
   countRecordsByModule,
   listingTagsForCluster,
   selectOrganisationsForCommandCentre,
+  rankClustersForCandidateSelection,
 } from "./universe-select.js";
 import { isFirstPartyOrganisation } from "../config/first-party-domains.js";
 import { loadFirstPartyDomains } from "../config/first-party-domains.js";
@@ -116,12 +120,206 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: nu
   return out;
 }
 
+function resolveMaxOrganisations(thresholds: CommandCentreThresholds, maxOrganisations?: number): number | undefined {
+  return maxOrganisations ?? thresholds.maxCandidateOrganisations;
+}
+
+function organisationIdsInSnapshot(snapshot: PortfolioSnapshot): Set<string> {
+  return new Set(snapshot.watch_items.map((item) => item.organisation_id));
+}
+
+type ClusterBuildResult = {
+  watchItems: ReturnType<typeof watchItemsFromAnalysis>;
+  failures: PortfolioFailure[];
+  reused: number;
+  refreshed: number;
+  failed: number;
+  openaiCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  firstParty?: NonNullable<PortfolioSnapshot["first_party_organisations"]>[number];
+  evidence: WatchItemEvidenceContext;
+};
+
+async function buildWatchItemsForCluster(
+  deps: CommandCentreDeps,
+  cluster: OrganisationCluster,
+  options: {
+    asOf: string;
+    thresholds: CommandCentreThresholds;
+    usageImportedAt?: string;
+    mode: "build_changed" | "full_rebuild" | "selected" | "refresh_backfill";
+    firstPartyDomains: Set<string>;
+    publicDomains: Set<string>;
+  },
+): Promise<ClusterBuildResult> {
+  const { asOf, thresholds, usageImportedAt, mode, firstPartyDomains, publicDomains } = options;
+  const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
+  const dealStages = Object.fromEntries(
+    cluster.records
+      .filter((item) => item.module === "Deals" && item.stage)
+      .map((item) => [item.recordId, item.stage as string]),
+  );
+  const evidence: WatchItemEvidenceContext = {
+    evidence_fingerprint: fingerprint,
+    sales_events: listSalesEvents({
+      organisationIds: [cluster.organisationId],
+      contactIds: cluster.records.filter((item) => item.module !== "Deals").map((item) => item.recordId),
+    }),
+    deal_stages: dealStages,
+    retrieval_ok: cluster.records.every((item) => item.retrieval !== "ERROR" && item.retrieval !== "UNAVAILABLE"),
+  };
+  const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
+  const firstParty = isFirstPartyOrganisation(cluster, firstPartyDomains, publicDomains);
+  const failures: PortfolioFailure[] = [];
+  let reused = 0;
+  let refreshed = 0;
+  let failed = 0;
+  let openaiCalls = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  const mustRefresh = mode === "full_rebuild" || decision.reuse !== "reuse";
+  let analysis = decision.stored;
+  let reuse: "reused" | "refreshed" | "failed" | "insufficient" = "reused";
+  if (mustRefresh) {
+    try {
+      analysis = await deps.analyse(cluster.representative.module, cluster.representative.recordId);
+      openaiCalls += 1;
+      inputTokens += analysis.usage.inputTokens ?? 0;
+      outputTokens += analysis.usage.outputTokens ?? 0;
+      writeStoredAnalysis({ ...analysis, evidenceFingerprint: fingerprint });
+      reuse = analysis.success ? "refreshed" : "failed";
+      if (!analysis.success) {
+        failed += 1;
+        failures.push({
+          organisation_id: cluster.organisationId,
+          organisation_name: cluster.organisationName,
+          stage: "openai",
+          state: "ERROR",
+          message: analysis.error ?? "Analysis failed.",
+        });
+      } else refreshed += 1;
+    } catch (error) {
+      failed += 1;
+      reuse = "failed";
+      failures.push({
+        organisation_id: cluster.organisationId,
+        organisation_name: cluster.organisationName,
+        stage: error instanceof Error && /zoho|crm|HTTP/i.test(error.message) ? "analysis" : "openai",
+        state: "ERROR",
+        message: error instanceof Error ? error.message : "Organisation analysis failed.",
+      });
+      analysis = decision.stored;
+    }
+  } else {
+    reused += 1;
+  }
+
+  const firstPartyEntry = firstParty
+    ? {
+        organisation_id: cluster.organisationId,
+        organisation_name: cluster.organisationName,
+        domains: cluster.domains,
+        analysis_stored: decision.reuse === "reuse" || Boolean(decision.stored?.success),
+        note: "Internal first-party organisation. Evidence preserved; excluded from external customer queue.",
+      }
+    : undefined;
+
+  if (!analysis?.profile) {
+    return {
+      watchItems: [],
+      failures,
+      reused,
+      refreshed,
+      failed,
+      openaiCalls,
+      inputTokens,
+      outputTokens,
+      firstParty: firstPartyEntry,
+      evidence,
+    };
+  }
+
+  const watchItems = watchItemsFromAnalysis(analysis, {
+    asOf,
+    organisationId: cluster.organisationId,
+    organisationName: cluster.organisationName,
+    thresholds,
+    reuse,
+    possibleMatchReview: cluster.possibleMatchReviews.length > 0,
+    usageDatasetAvailable: usageImportIsOperational(),
+    listingDeals: cluster.records.filter((item) => item.module === "Deals"),
+    customerQueue: !firstParty,
+  });
+
+  return {
+    watchItems,
+    failures,
+    reused,
+    refreshed,
+    failed,
+    openaiCalls,
+    inputTokens,
+    outputTokens,
+    firstParty: firstPartyEntry,
+    evidence,
+  };
+}
+
+/** Max active-work vacancies to try filling on one refresh-control. */
+export const BACKFILL_MAX_VACANCIES_PER_REFRESH = 10;
+/** Max ranked unaudited organisations examined while filling one vacancy. */
+export const BACKFILL_MAX_ORGANISATIONS_EXAMINED_PER_VACANCY = 5;
+/** Max fresh OpenAI organisation analyses during one backfill refresh. */
+export const BACKFILL_MAX_FRESH_ORGANISATION_ANALYSES_PER_REFRESH = 1;
+
+export function isWorthwhileBackfillReplacement(items: CommercialWatchItem[]): boolean {
+  return items.some((item) => {
+    if (item.priority === "P5") return false;
+    if (item.next_best_action === "NO_ACTION" && item.action_timing === "NO_ACTION_REQUIRED") return false;
+    if (item.actionability_kind === "NO_ACTION") return false;
+    if (item.customer_queue === false) return false;
+    return true;
+  });
+}
+
+function partitionClustersForBuild(
+  clusters: OrganisationCluster[],
+  mode: "build_changed" | "full_rebuild" | "selected",
+  thresholds: CommandCentreThresholds,
+  usageImportedAt?: string,
+): { process: OrganisationCluster[]; deferred: number } {
+  if (mode === "full_rebuild") return { process: clusters, deferred: 0 };
+
+  const reusable: OrganisationCluster[] = [];
+  const needsFresh: OrganisationCluster[] = [];
+  for (const cluster of clusters) {
+    const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
+    const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
+    if (decision.reuse === "reuse") reusable.push(cluster);
+    else needsFresh.push(cluster);
+  }
+
+  if (mode === "selected") {
+    return { process: [...reusable, ...needsFresh], deferred: 0 };
+  }
+
+  const freshCap = thresholds.maxFreshOrganisationAnalysesPerBuild;
+  const allowedFresh = needsFresh.slice(0, freshCap);
+  return {
+    process: [...reusable, ...allowedFresh],
+    deferred: Math.max(0, needsFresh.length - allowedFresh.length),
+  };
+}
+
 function selectClusters(
   clusters: OrganisationCluster[],
   maxOrganisations?: number,
   asOf?: string,
+  timeZone?: string,
 ): OrganisationCluster[] {
-  return selectOrganisationsForCommandCentre(clusters, maxOrganisations, asOf);
+  return selectOrganisationsForCommandCentre(clusters, maxOrganisations, asOf, timeZone);
 }
 
 export async function scanCommandCentre(
@@ -132,11 +330,14 @@ export async function scanCommandCentre(
   const firstPartyDomains = deps.firstPartyDomains ?? loadFirstPartyDomains();
   const asOf = (deps.now ?? (() => new Date()))().toISOString();
   const usageImportedAt = loadUsageImportMeta().importedAt;
+  const maxOrganisations = resolveMaxOrganisations(thresholds, options.maxOrganisations);
   const discovered = await discoverUniverse(deps.client, { maxRecordsPerModule: thresholds.maxRecordsPerModule });
   const clusters = groupUniverseRecords(discovered.records, deps.publicDomains);
+  const universeAudit = computeUniverseAuditStats(clusters, discovered.records);
   const selected = options.organisationIds?.length
     ? clusters.filter((item) => options.organisationIds!.includes(item.organisationId))
-    : selectClusters(clusters, options.maxOrganisations, asOf);
+    : selectClusters(clusters, maxOrganisations, asOf, thresholds.timeZone);
+  const candidateAudit = candidateAuditForSelection(selected);
   const organisations = selected.map((cluster) => {
     const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
     const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
@@ -158,18 +359,23 @@ export async function scanCommandCentre(
   });
   const estimate: ScanEstimate = {
     generated_at: asOf,
-    organisations_discovered: selected.length,
+    organisations_discovered: clusters.length,
     organisations_selected: selected.length,
     universe_size: clusters.length,
     records_by_module: countRecordsByModule(discovered.records),
+    universe_audit: universeAudit,
+    candidate_audit: {
+      ...candidateAudit,
+      max_candidate_organisations: maxOrganisations ?? clusters.length,
+    },
     selection_method: COMMAND_CENTRE_SELECTION_METHOD,
     analyses_reusable: organisations.filter((item) => item.reuse === "reuse").length,
     analyses_require_refresh: organisations.filter((item) => item.reuse !== "reuse").length,
     retrieval_warnings: discovered.failures.map((item) => item.message),
-    truncated: discovered.truncated || Boolean(options.maxOrganisations && clusters.length > options.maxOrganisations),
+    truncated: discovered.truncated || Boolean(maxOrganisations && clusters.length > maxOrganisations),
     truncated_reason:
-      options.maxOrganisations && clusters.length > options.maxOrganisations
-        ? `Scan limited to ${options.maxOrganisations} organisations of ${clusters.length} discovered.`
+      maxOrganisations && clusters.length > maxOrganisations
+        ? `Candidate analysis limited to ${maxOrganisations} organisations of ${clusters.length} discovered. Full universe remains available for deterministic selection.`
         : discovered.truncated
           ? `Module listing capped at ${thresholds.maxRecordsPerModule} records.`
           : undefined,
@@ -211,6 +417,7 @@ export async function buildCommandCentre(
   const firstPartyDomains = deps.firstPartyDomains ?? loadFirstPartyDomains();
   const asOf = (deps.now ?? (() => new Date()))().toISOString();
   const usageImportedAt = loadUsageImportMeta().importedAt;
+  const maxOrganisations = resolveMaxOrganisations(thresholds, options.maxOrganisations);
   const discovered = await discoverUniverse(deps.client, { maxRecordsPerModule: thresholds.maxRecordsPerModule });
   const universe = groupUniverseRecords(discovered.records, deps.publicDomains);
   let clusters = universe;
@@ -218,13 +425,20 @@ export async function buildCommandCentre(
     const wanted = new Set(options.organisationIds);
     clusters = clusters.filter((item) => wanted.has(item.organisationId));
   } else {
-    clusters = selectClusters(clusters, options.maxOrganisations, asOf);
+    clusters = selectClusters(clusters, maxOrganisations, asOf, thresholds.timeZone);
   }
-  if (options.maxOrganisations && clusters.length > options.maxOrganisations) {
+  if (maxOrganisations && clusters.length > maxOrganisations) {
     throw new Error(
-      `Command Centre refused to analyse ${clusters.length} organisations; max is ${options.maxOrganisations}.`,
+      `Command Centre refused to analyse ${clusters.length} organisations; max is ${maxOrganisations}.`,
     );
   }
+
+  const { process: clustersToProcess, deferred: analysesDeferred } = partitionClustersForBuild(
+    clusters,
+    options.mode,
+    thresholds,
+    usageImportedAt,
+  );
 
   const failures: PortfolioFailure[] = [...discovered.failures];
   let reused = 0;
@@ -237,83 +451,25 @@ export async function buildCommandCentre(
   const firstPartyTracked: NonNullable<PortfolioSnapshot["first_party_organisations"]> = [];
   const evidenceByOrganisation = new Map<string, WatchItemEvidenceContext>();
 
-  const built = await mapLimit(clusters, thresholds.analyseConcurrency, async (cluster) => {
-    const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
-    const dealStages = Object.fromEntries(
-      cluster.records
-        .filter((item) => item.module === "Deals" && item.stage)
-        .map((item) => [item.recordId, item.stage as string]),
-    );
-    evidenceByOrganisation.set(cluster.organisationId, {
-      evidence_fingerprint: fingerprint,
-      sales_events: listSalesEvents({
-        organisationIds: [cluster.organisationId],
-        contactIds: cluster.records.filter((item) => item.module !== "Deals").map((item) => item.recordId),
-      }),
-      deal_stages: dealStages,
-      retrieval_ok: cluster.records.every((item) => item.retrieval !== "ERROR" && item.retrieval !== "UNAVAILABLE"),
-    });
-    const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
-    const firstParty = isFirstPartyOrganisation(cluster, firstPartyDomains, deps.publicDomains);
-    if (firstParty) {
-      firstPartyTracked.push({
-        organisation_id: cluster.organisationId,
-        organisation_name: cluster.organisationName,
-        domains: cluster.domains,
-        analysis_stored: decision.reuse === "reuse" || Boolean(decision.stored?.success),
-        note: "Internal first-party organisation. Evidence preserved; excluded from external customer queue.",
-      });
-    }
-    const mustRefresh = options.mode === "full_rebuild" || decision.reuse !== "reuse";
-    let analysis = decision.stored;
-    let reuse: "reused" | "refreshed" | "failed" | "insufficient" = "reused";
-    if (mustRefresh) {
-      try {
-        analysis = await deps.analyse(cluster.representative.module, cluster.representative.recordId);
-        openaiCalls += 1;
-        inputTokens += analysis.usage.inputTokens ?? 0;
-        outputTokens += analysis.usage.outputTokens ?? 0;
-        writeStoredAnalysis({ ...analysis, evidenceFingerprint: fingerprint });
-        reuse = analysis.success ? "refreshed" : "failed";
-        if (!analysis.success) {
-          failed += 1;
-          failures.push({
-            organisation_id: cluster.organisationId,
-            organisation_name: cluster.organisationName,
-            stage: "openai",
-            state: "ERROR",
-            message: analysis.error ?? "Analysis failed.",
-          });
-        } else refreshed += 1;
-      } catch (error) {
-        failed += 1;
-        reuse = "failed";
-        failures.push({
-          organisation_id: cluster.organisationId,
-          organisation_name: cluster.organisationName,
-          stage: error instanceof Error && /zoho|crm|HTTP/i.test(error.message) ? "analysis" : "openai",
-          state: "ERROR",
-          message: error instanceof Error ? error.message : "Organisation analysis failed.",
-        });
-        analysis = decision.stored;
-      }
-    } else {
-      reused += 1;
-    }
-    if (!analysis?.profile) {
-      return [];
-    }
-    return watchItemsFromAnalysis(analysis, {
+  const built = await mapLimit(clustersToProcess, thresholds.analyseConcurrency, async (cluster) => {
+    const result = await buildWatchItemsForCluster(deps, cluster, {
       asOf,
-      organisationId: cluster.organisationId,
-      organisationName: cluster.organisationName,
       thresholds,
-      reuse,
-      possibleMatchReview: cluster.possibleMatchReviews.length > 0,
-      usageDatasetAvailable: usageImportIsOperational(),
-      listingDeals: cluster.records.filter((item) => item.module === "Deals"),
-      customerQueue: !firstParty,
+      usageImportedAt,
+      mode: options.mode,
+      firstPartyDomains,
+      publicDomains: deps.publicDomains,
     });
+    evidenceByOrganisation.set(cluster.organisationId, result.evidence);
+    if (result.firstParty) firstPartyTracked.push(result.firstParty);
+    failures.push(...result.failures);
+    reused += result.reused;
+    refreshed += result.refreshed;
+    failed += result.failed;
+    openaiCalls += result.openaiCalls;
+    inputTokens += result.inputTokens;
+    outputTokens += result.outputTokens;
+    return result.watchItems;
   });
 
   const sorted = sortWatchItems(built.flat());
@@ -334,6 +490,7 @@ export async function buildCommandCentre(
     duration_ms: Date.now() - started,
     mode: options.mode,
     organisations_discovered: clusters.length,
+    universe_size: universe.length,
     watch_items: items,
     ranking_note: PRIORITY_TIEBREAK,
     stalled_count: items.filter((item) => item.stalled_state === "STALLED").length,
@@ -358,17 +515,170 @@ export async function buildCommandCentre(
     analyses_reused: reused,
     analyses_refreshed: refreshed,
     analyses_failed: failed,
+    analyses_deferred: analysesDeferred > 0 ? analysesDeferred : undefined,
     first_party_organisations: firstPartyTracked.length ? firstPartyTracked : undefined,
-    truncated: discovered.truncated || clusters.length < universe.length,
+    truncated: discovered.truncated || clusters.length < universe.length || analysesDeferred > 0,
     truncated_reason:
-      clusters.length < universe.length
-        ? `Build limited to ${clusters.length} organisations of ${universe.length} discovered.`
-        : discovered.truncated
-          ? `Module listing capped at ${thresholds.maxRecordsPerModule} records.`
-          : undefined,
+      analysesDeferred > 0
+        ? `Fresh organisation analysis deferred for ${analysesDeferred} candidate(s). Reusable analyses were included; run Build again to expand progressively (max ${thresholds.maxFreshOrganisationAnalysesPerBuild} fresh per build_changed).`
+        : clusters.length < universe.length
+          ? `Candidate analysis limited to ${clusters.length} organisations of ${universe.length} discovered. Full universe remains available for deterministic selection.`
+          : discovered.truncated
+            ? `Module listing capped at ${thresholds.maxRecordsPerModule} records.`
+            : undefined,
   };
   writePortfolioSnapshot(snapshot);
   return snapshot;
+}
+
+export async function refreshSnapshotWithBackfill(
+  deps: CommandCentreDeps,
+  snapshot: PortfolioSnapshot,
+): Promise<{ snapshot: PortfolioSnapshot; openaiCalls: number }> {
+  const thresholds = deps.thresholds ?? DEFAULT_COMMAND_CENTRE_THRESHOLDS;
+  const firstPartyDomains = deps.firstPartyDomains ?? loadFirstPartyDomains();
+  const asOf = (deps.now ?? (() => new Date()))().toISOString();
+  const usageImportedAt = loadUsageImportMeta().importedAt;
+  const maxCandidates = thresholds.maxCandidateOrganisations;
+
+  const beforeActive = snapshot.watch_items.filter((item) => isEffectivelyCustomerExecutable(item)).length;
+  let refreshed = refreshSnapshotOperatorControl(snapshot, asOf);
+  const afterActive = refreshed.watch_items.filter((item) => isEffectivelyCustomerExecutable(item)).length;
+  const presentOrgIds = organisationIdsInSnapshot(refreshed);
+
+  let openaiCalls = 0;
+  let inputTokens = refreshed.tokens.input_tokens;
+  let outputTokens = refreshed.tokens.output_tokens;
+  let reused = refreshed.analyses_reused;
+  let refreshedCount = refreshed.analyses_refreshed;
+  let failed = refreshed.analyses_failed;
+  const failures = [...refreshed.failures];
+  const firstPartyTracked = [...(refreshed.first_party_organisations ?? [])];
+  const evidenceByOrganisation = new Map<string, WatchItemEvidenceContext>();
+
+  for (const item of refreshed.watch_items) {
+    if (!evidenceByOrganisation.has(item.organisation_id)) {
+      evidenceByOrganisation.set(item.organisation_id, {
+        evidence_fingerprint: item.evidence_snapshot_ref,
+        sales_events: listSalesEvents({
+          organisationIds: [item.organisation_id],
+          contactIds: item.contact_ids,
+        }),
+        retrieval_ok: true,
+      });
+    }
+  }
+
+  const capacityFreed = afterActive < beforeActive;
+  const candidateRoom = presentOrgIds.size < maxCandidates;
+  const universeHasCandidates =
+    snapshot.universe_size !== undefined && snapshot.universe_size > presentOrgIds.size;
+  if (!capacityFreed || !candidateRoom || !universeHasCandidates) {
+    return { snapshot: refreshed, openaiCalls: 0 };
+  }
+
+  const discovered = await discoverUniverse(deps.client, { maxRecordsPerModule: thresholds.maxRecordsPerModule });
+  const universe = groupUniverseRecords(discovered.records, deps.publicDomains);
+  const vacanciesToFill = Math.min(
+    Math.max(0, beforeActive - afterActive),
+    BACKFILL_MAX_VACANCIES_PER_REFRESH,
+  );
+  const maxOrgsToExamine = vacanciesToFill * BACKFILL_MAX_ORGANISATIONS_EXAMINED_PER_VACANCY;
+  const rankedCandidates = rankClustersForCandidateSelection(universe, asOf, thresholds.timeZone);
+  const workingPresentIds = new Set(presentOrgIds);
+
+  let vacanciesFilled = 0;
+  let orgsExamined = 0;
+  let backfillFreshBudget = BACKFILL_MAX_FRESH_ORGANISATION_ANALYSES_PER_REFRESH;
+  const backfillItems: ReturnType<typeof watchItemsFromAnalysis> = [];
+
+  for (const cluster of rankedCandidates) {
+    if (vacanciesFilled >= vacanciesToFill || orgsExamined >= maxOrgsToExamine) break;
+    if (workingPresentIds.has(cluster.organisationId)) continue;
+    if (workingPresentIds.size >= maxCandidates) break;
+
+    const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
+    const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
+    if (decision.reuse !== "reuse" && backfillFreshBudget <= 0) continue;
+
+    orgsExamined += 1;
+    workingPresentIds.add(cluster.organisationId);
+
+    const result = await buildWatchItemsForCluster(deps, cluster, {
+      asOf,
+      thresholds,
+      usageImportedAt,
+      mode: "refresh_backfill",
+      firstPartyDomains,
+      publicDomains: deps.publicDomains,
+    });
+    evidenceByOrganisation.set(cluster.organisationId, result.evidence);
+    if (result.firstParty) firstPartyTracked.push(result.firstParty);
+    failures.push(...result.failures);
+    reused += result.reused;
+    refreshedCount += result.refreshed;
+    failed += result.failed;
+    openaiCalls += result.openaiCalls;
+    inputTokens += result.inputTokens;
+    outputTokens += result.outputTokens;
+    if (result.openaiCalls > 0) backfillFreshBudget -= result.openaiCalls;
+    backfillItems.push(...result.watchItems);
+
+    const controlledNew = applyOperatorControlToWatchItems(
+      enrichWatchItemsForOperatorControl(sortWatchItems(result.watchItems), evidenceByOrganisation),
+      { asOf, evidenceByOrganisation },
+    );
+    if (isWorthwhileBackfillReplacement(controlledNew)) {
+      vacanciesFilled += 1;
+    }
+  }
+
+  if (!backfillItems.length) {
+    return { snapshot: refreshed, openaiCalls };
+  }
+
+  const mergedRaw = [...refreshed.watch_items, ...backfillItems];
+  const sorted = sortWatchItems(mergedRaw);
+  const enriched = enrichWatchItemsForOperatorControl(sorted, evidenceByOrganisation);
+  const items = applyOperatorControlToWatchItems(enriched, { asOf, evidenceByOrganisation });
+  const brief = deterministicDailyBrief(items, failures, asOf);
+
+  const nextSnapshot: PortfolioSnapshot = {
+    ...refreshed,
+    generated_at: asOf,
+    mode: "refresh_backfill",
+    universe_size: universe.length,
+    organisations_discovered: new Set(items.map((item) => item.organisation_id)).size,
+    watch_items: items,
+    brief,
+    failures,
+    needs_action_today: items.filter((item) => isEffectivelyCustomerExecutable(item)).length,
+    waiting_count: items.filter(
+      (item) =>
+        item.effective_queue_state === "WAIT" ||
+        item.executability === "WAITING_FOR_TIME" ||
+        item.executability === "WAITING_FOR_CUSTOMER" ||
+        item.executability === "DATA_REQUIRED" ||
+        item.priority === "P4" ||
+        item.next_best_action === "WAIT",
+    ).length,
+    stalled_count: items.filter((item) => item.stalled_state === "STALLED").length,
+    active_opportunities: items.filter((item) =>
+      item.opportunity_signals.some((signal) => signal.code === "LIVE_DEAL_PRESENT"),
+    ).length,
+    analyses_reused: reused,
+    analyses_refreshed: refreshedCount,
+    analyses_failed: failed,
+    first_party_organisations: firstPartyTracked.length ? firstPartyTracked : undefined,
+    tokens: {
+      openai_calls: refreshed.tokens.openai_calls + openaiCalls,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      total_tokens: inputTokens + outputTokens,
+    },
+  };
+
+  return { snapshot: nextSnapshot, openaiCalls };
 }
 
 export function refreshSnapshotOperatorControl(

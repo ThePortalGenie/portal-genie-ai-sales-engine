@@ -1790,6 +1790,14 @@ function renderCcDetailContent(item) {
     }
   }
 
+  const crmSource =
+    item.source_record?.module === "Leads"
+      ? "Lead"
+      : item.lead_ids?.length && !(item.deal_ids?.length)
+        ? "Lead"
+        : undefined;
+  if (crmSource) appendKv(body, "CRM source", crmSource);
+
   appendSignalBlock(body, "Urgency signals", item.urgency_signals);
   appendSignalBlock(body, "Opportunity signals", item.opportunity_signals);
   appendSignalBlock(body, "Risk signals", item.risk_signals);
@@ -2743,7 +2751,7 @@ async function runCcScan() {
   const status = $("cc-status");
   status.textContent = "Scanning CRM… OpenAI is not called.";
   try {
-    ccScan = await api("/api/command-centre/scan", { method: "POST", body: JSON.stringify({ maxOrganisations: 5 }) });
+    ccScan = await api("/api/command-centre/scan", { method: "POST", body: "{}" });
     renderCommandCentre();
     status.textContent = ccScan.truncated_reason
       ? `Scan complete. ${ccScan.truncated_reason} OpenAI was not called.`
@@ -2761,7 +2769,7 @@ async function runCcBuild(mode) {
   try {
     const data = await api("/api/command-centre/build", {
       method: "POST",
-      body: JSON.stringify({ mode, confirm: true, maxOrganisations: 5, includeBriefSynthesis: true }),
+      body: JSON.stringify({ mode, confirm: true, includeBriefSynthesis: true }),
     });
     ccSnapshot = data.snapshot;
     renderCommandCentre();

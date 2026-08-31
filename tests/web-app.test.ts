@@ -110,7 +110,8 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /cc-item-compact/);
     assert.match(js, /\/api\/command-centre\/snapshot/);
     assert.match(js, /confirm: true/);
-    assert.match(js, /maxOrganisations: 5/);
+    assert.match(js, /includeBriefSynthesis: true/);
+    assert.match(js, /appendKv\(body, "CRM source", crmSource\)/);
     assert.match(js, /full_rebuild/);
     assert.match(js, /async function loadCommandCentre/);
     assert.match(js, /ccSnapshot = null/);

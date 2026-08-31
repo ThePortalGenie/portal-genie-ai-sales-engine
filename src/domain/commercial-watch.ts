@@ -102,6 +102,10 @@ export type CommandCentreThresholds = {
   unansweredAttemptsForStall: number;
   maxRecordsPerModule: number;
   analyseConcurrency: number;
+  /** Max organisation-product candidates analysed per build/backfill cycle (V1 safety cap). */
+  maxCandidateOrganisations: number;
+  /** Max fresh OpenAI organisation analyses per build_changed (reuse does not count). */
+  maxFreshOrganisationAnalysesPerBuild: number;
   notes: string;
 };
 
@@ -112,8 +116,19 @@ export const DEFAULT_COMMAND_CENTRE_THRESHOLDS: CommandCentreThresholds = {
   unansweredAttemptsForStall: 2,
   maxRecordsPerModule: 200,
   analyseConcurrency: 2,
+  maxCandidateOrganisations: 50,
+  maxFreshOrganisationAnalysesPerBuild: 10,
   notes:
     "Interim V1 thresholds. An old deal alone is not stalled. overdue commitments outrank generic live opportunities.",
+};
+
+export type UniverseAuditStats = {
+  reconstructed_organisations: number;
+  organisations_with_leads: number;
+  lead_only_organisations: number;
+  organisations_with_deals: number;
+  contact_or_account_without_deal: number;
+  records_by_module: { Contacts: number; Leads: number; Deals: number };
 };
 
 export type UniverseRecord = {
@@ -304,8 +319,10 @@ export type PortfolioSnapshot = {
   generated_at: string;
   run_id: string;
   duration_ms: number;
-  mode: "scan" | "build_changed" | "full_rebuild" | "selected";
+  mode: "scan" | "build_changed" | "full_rebuild" | "selected" | "refresh_backfill";
   organisations_discovered: number;
+  /** Full reconstructed commercial universe size when known (may exceed organisations_discovered). */
+  universe_size?: number;
   watch_items: CommercialWatchItem[];
   ranking_note: string;
   stalled_count: number;
@@ -318,6 +335,7 @@ export type PortfolioSnapshot = {
   analyses_reused: number;
   analyses_refreshed: number;
   analyses_failed: number;
+  analyses_deferred?: number;
   truncated?: boolean;
   truncated_reason?: string;
   first_party_organisations?: Array<{
@@ -339,6 +357,13 @@ export type ScanEstimate = {
   truncated?: boolean;
   truncated_reason?: string;
   records_by_module?: { Contacts: number; Leads: number; Deals: number };
+  universe_audit?: UniverseAuditStats;
+  candidate_audit?: {
+    candidates_selected: number;
+    candidates_with_leads: number;
+    lead_only_candidates: number;
+    max_candidate_organisations: number;
+  };
   selection_method?: string;
   organisations_selected?: number;
   organisations: Array<{

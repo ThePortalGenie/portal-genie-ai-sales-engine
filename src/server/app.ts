@@ -650,7 +650,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     }
 
     if (method === "POST" && url.pathname === "/api/command-centre/refresh-control") {
-      send(res, 200, refreshSalesCommandCentreControl());
+      send(res, 200, await refreshSalesCommandCentreControl());
       return;
     }
 
