@@ -1,3 +1,4 @@
+import type { DecisionContextSnapshot } from "../../domain/operator-decision.js";
 import { PRIMARY_MODULES, type PrimaryModule } from "./constants.js";
 
 export type ZohoWriteContext = {
@@ -6,11 +7,17 @@ export type ZohoWriteContext = {
   source_record?: { module?: string; recordId?: string };
   contact_ids?: string[];
   lead_ids?: string[];
+  deal_ids?: string[];
   account_id?: string;
 };
 
 export type ZohoWriteTarget = {
   module: PrimaryModule;
+  recordId: string;
+};
+
+export type ZohoNoteWriteTarget = {
+  module: PrimaryModule | "Deals";
   recordId: string;
 };
 
@@ -62,6 +69,54 @@ export function resolveZohoWriteTarget(context: ZohoWriteContext): ZohoWriteTarg
   return null;
 }
 
+export function resolveContextContactTarget(
+  snapshot: DecisionContextSnapshot | undefined,
+  context: ZohoWriteContext | undefined,
+  organisationKey: string,
+): ZohoWriteTarget | null {
+  const target = resolveZohoWriteTarget({
+    organisation_key: organisationKey,
+    contact_id: snapshot?.recommended_contact_id,
+    source_record: context?.source_record,
+    contact_ids: context?.contact_ids,
+    lead_ids: context?.lead_ids,
+    account_id: context?.account_id,
+  });
+  if (!target) return null;
+  if (target.module !== "Contacts" && target.module !== "Leads") return null;
+  return target;
+}
+
+export type ContextDealTargetResolution = {
+  target: ZohoNoteWriteTarget | null;
+  skipped: boolean;
+  reason?: string;
+};
+
+export function resolveContextDealTarget(
+  snapshot: DecisionContextSnapshot | undefined,
+  context: ZohoWriteContext | undefined,
+): ContextDealTargetResolution {
+  const snapshotIds = (snapshot?.deal_ids ?? []).map((id) => id.trim()).filter(isZohoId);
+  if (!snapshotIds.length) {
+    return { target: null, skipped: true, reason: "No exact deal id is available for this product." };
+  }
+  const allowed =
+    context?.deal_ids?.map((id) => id.trim()).filter(isZohoId) ?? snapshotIds;
+  const candidates = snapshotIds.filter((id) => allowed.includes(id));
+  if (!candidates.length) {
+    return { target: null, skipped: true, reason: "No product-relevant deal id is available." };
+  }
+  if (candidates.length > 1) {
+    return {
+      target: null,
+      skipped: true,
+      reason: "Multiple deals match; deal note was not written.",
+    };
+  }
+  return { target: { module: "Deals", recordId: candidates[0]! }, skipped: false };
+}
+
 export function parseZohoWriteContext(value: unknown): ZohoWriteContext | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
@@ -90,5 +145,8 @@ export function parseZohoWriteContext(value: unknown): ZohoWriteContext | undefi
       ? record.lead_ids.filter((item): item is string => typeof item === "string")
       : undefined,
     account_id: typeof record.account_id === "string" ? record.account_id : undefined,
+    deal_ids: Array.isArray(record.deal_ids)
+      ? record.deal_ids.filter((item): item is string => typeof item === "string")
+      : undefined,
   };
 }

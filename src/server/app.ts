@@ -14,13 +14,13 @@ import {
   listOperatorDecisions,
   revokeOperatorDecision,
   supersedeOperatorDecision,
-  attachOperatorDecisionZohoNote,
+  attachOperatorDecisionContextZohoNotes,
 } from "../intelligence/operator-decision-store.js";
 import { writerFromClient } from "../integrations/zoho/write-client.js";
 import {
   parseZohoWriteContext,
   resolveZohoNoteWriter,
-  writeContextNoteToZoho,
+  writeContextNotesToZoho,
   writeInteractionNoteToZoho,
 } from "../integrations/zoho/write-back.js";
 import { buildRelationshipView } from "../web/relationship-view.js";
@@ -101,18 +101,31 @@ async function persistSalesEventZohoWrite(
   return { event: saved, ...zohoWriteResponse(attempt) };
 }
 
+function contextZohoWriteResponse(result: Awaited<ReturnType<typeof writeContextNotesToZoho>>) {
+  const noteIds = [result.contact.noteId, result.deal.noteId].filter(Boolean);
+  return {
+    writtenToZoho: result.ok && noteIds.length > 0,
+    zohoWrite: result,
+  };
+}
+
 async function persistContextZohoWrite(
   decision: ReturnType<typeof createOperatorDecision>,
   context: ReturnType<typeof parseZohoWriteContext>,
 ) {
-  const attempt = await writeContextNoteToZoho(
+  const result = await writeContextNotesToZoho(
     decision,
     context,
     resolveZohoNoteWriter(productionZohoNoteWriter()),
   );
+  const notes: { contact_zoho_note_id?: string; deal_zoho_note_id?: string } = {};
+  if (result.contact.noteId && result.contact.ok) notes.contact_zoho_note_id = result.contact.noteId;
+  if (result.deal.noteId && result.deal.ok) notes.deal_zoho_note_id = result.deal.noteId;
   const saved =
-    attempt.noteId && attempt.ok ? attachOperatorDecisionZohoNote(decision.id, attempt.noteId) : decision;
-  return { decision: redactSecrets(saved), ...zohoWriteResponse(attempt) };
+    notes.contact_zoho_note_id || notes.deal_zoho_note_id
+      ? attachOperatorDecisionContextZohoNotes(decision.id, notes)
+      : decision;
+  return { decision: redactSecrets(saved), ...contextZohoWriteResponse(result) };
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

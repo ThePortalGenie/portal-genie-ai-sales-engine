@@ -74,7 +74,10 @@ export type OperatorDecision = {
   preferred_contact_name?: string;
   provenance: typeof OPERATOR_DECISION_PROVENANCE;
   explicit_quality_feedback?: QualityFeedbackKind;
+  /** @deprecated Use contact_zoho_note_id. Retained for earlier context write-back records. */
   zoho_note_id?: string;
+  contact_zoho_note_id?: string;
+  deal_zoho_note_id?: string;
   zoho_written_at?: string;
 };
 
@@ -291,6 +294,8 @@ export function parseOperatorDecisionInput(input: OperatorDecisionInput, existin
       QUALITY_FEEDBACK_KINDS,
     ),
     zoho_note_id: existing?.zoho_note_id,
+    contact_zoho_note_id: existing?.contact_zoho_note_id,
+    deal_zoho_note_id: existing?.deal_zoho_note_id,
     zoho_written_at: existing?.zoho_written_at,
   };
 }

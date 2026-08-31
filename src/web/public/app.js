@@ -1457,250 +1457,327 @@ $("nav-toggle")?.addEventListener("click", () => {
   $("nav-toggle").setAttribute("aria-expanded", String(open));
 });
 
-let ccFilter = "ALL";
 let ccScan = null;
 let ccSnapshot = null;
-let ccBriefWaitExpanded = false;
+let ccDetailDialog = null;
+let ccDetailItem = null;
 
-function productLabel(scope) {
-  if (scope === "PORTAL_GENIE") return "Portal Genie";
-  if (scope === "NAGGING_PANDA") return "Nagging Panda";
-  return words(scope);
+function isPrimaryQueueExcluded(item) {
+  if (item.priority === "P5") return true;
+  if (item.effective_queue_state === "SYSTEM_NO_ACTION") return true;
+  if (item.next_best_action === "NO_ACTION" && item.action_timing === "NO_ACTION_REQUIRED") return true;
+  return false;
 }
 
-function briefShortReason(text, max = 140) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed) return "";
-  const sentence = trimmed.split(/(?<=[.!?])\s+/)[0] || trimmed;
-  if (sentence.length <= max) return sentence;
-  return `${sentence.slice(0, max - 1).trimEnd()}…`;
+function isFocusNowItem(item) {
+  if (isPrimaryQueueExcluded(item)) return false;
+  if (item.operator_control?.controlled && item.operator_control.actionable === false) return false;
+  return (
+    (item.priority === "P0" || item.priority === "P1") &&
+    item.executability === "EXECUTABLE_NOW" &&
+    item.actionability_kind === "CUSTOMER_ACTION" &&
+    item.customer_queue !== false
+  );
 }
 
-function briefDoFirstActions(brief, snapshot) {
-  if (brief?.do_first_actions?.length) return brief.do_first_actions;
-  return (snapshot?.watch_items || [])
-    .filter((item) =>
-      (item.priority === "P0" || item.priority === "P1") &&
-      item.executability === "EXECUTABLE_NOW" &&
-      item.actionability_kind === "CUSTOMER_ACTION" &&
-      item.customer_queue !== false,
-    )
-    .map((item) => ({
-      watch_item_id: item.id,
-      organisation_id: item.organisation_id,
-      organisation_name: item.organisation_name,
-      product_scope: item.product_scope,
-      recommended_contact_name: item.recommended_contact_name || item.primary_contact_name,
-      next_best_action: item.next_best_action,
-      when_label: whenLabel(item),
-      reason: briefShortReason(item.why_this_action),
-      priority: item.priority === "P0" ? "P0" : "P1",
-    }));
+function isNextItem(item) {
+  if (isPrimaryQueueExcluded(item)) return false;
+  if (isFocusNowItem(item)) return false;
+  if (item.operator_control?.controlled && item.operator_control.actionable === false) return false;
+  if (item.effective_queue_state === "REVIEW_REQUIRED") return true;
+  if (item.effective_queue_state === "RESEARCH" && item.actionability_kind === "INTERNAL_RESEARCH") return true;
+  if (item.effective_queue_state === "WAIT") return true;
+  if (
+    (item.priority === "P2" || item.priority === "P3") &&
+    item.actionability_kind === "CUSTOMER_ACTION" &&
+    item.customer_queue !== false &&
+    item.executability === "EXECUTABLE_NOW"
+  ) {
+    return true;
+  }
+  return false;
 }
 
-function briefResearchItems(brief, snapshot) {
-  if (brief?.research_items?.length) return brief.research_items;
-  return (snapshot?.watch_items || [])
-    .filter((item) => item.actionability_kind === "INTERNAL_RESEARCH" || item.actionability_kind === "DATA_REQUIRED")
-    .map((item) => ({
-      watch_item_id: item.id,
-      organisation_id: item.organisation_id,
-      organisation_name: item.organisation_name,
-      product_scope: item.product_scope,
-      next_best_action: item.next_best_action,
-      actionability_kind: item.actionability_kind === "DATA_REQUIRED" ? "DATA_REQUIRED" : "INTERNAL_RESEARCH",
-      reason: briefShortReason(item.why_this_action),
-    }));
-}
-
-function briefWaitItems(brief, snapshot) {
-  if (brief?.wait_items?.length) return brief.wait_items;
-  return (snapshot?.watch_items || [])
-    .filter((item) =>
-      item.actionability_kind !== "INTERNAL_RESEARCH" &&
-      item.actionability_kind !== "DATA_REQUIRED" &&
-      (item.executability === "WAITING_FOR_TIME" ||
-        item.executability === "WAITING_FOR_CUSTOMER" ||
-        item.priority === "P4" ||
-        item.stalled_state === "SCHEDULED_FOLLOW_UP" ||
-        item.stalled_state === "WAITING_ON_CUSTOMER" ||
-        item.next_best_action === "WAIT"),
-    )
-    .map((item) => ({
-      watch_item_id: item.id,
-      organisation_id: item.organisation_id,
-      organisation_name: item.organisation_name,
-      wait_kind: item.action_due_at ? "WAIT_UNTIL" : item.executability === "WAITING_FOR_CUSTOMER" || item.stalled_state === "WAITING_ON_CUSTOMER" ? "WAITING_ON_CUSTOMER" : "NO_ACTION_TODAY",
-      when_label: whenLabel(item),
-      reason: briefShortReason(item.why_this_action),
-      time_sensitive: Boolean(item.action_due_at),
-    }))
-    .sort((left, right) => Number(right.time_sensitive) - Number(left.time_sensitive));
-}
-
-function briefCommercialWatch(brief) {
-  if (brief?.commercial_watch?.length) return brief.commercial_watch;
-  if (brief?.narrative) return [];
-  return [];
+function urgencyLabel(item) {
+  if (item.priority === "P0" || item.action_timing === "ACT_NOW" || item.action_timing === "OVERDUE") return "NOW";
+  if (item.action_timing === "TODAY") return "TODAY";
+  if (item.action_due_at) {
+    const due = Date.parse(item.action_due_at);
+    if (!Number.isNaN(due)) {
+      const days = (due - Date.now()) / 86400000;
+      if (days <= 0) return "NOW";
+      if (days <= 1) return "TODAY";
+      if (days <= 7) return "THIS WEEK";
+      return "LATER";
+    }
+  }
+  if (item.action_timing === "SCHEDULED_DATE") return "THIS WEEK";
+  if (
+    item.priority === "P4" ||
+    item.executability === "WAITING_FOR_TIME" ||
+    item.executability === "WAITING_FOR_CUSTOMER" ||
+    item.next_best_action === "WAIT"
+  ) {
+    return "LATER";
+  }
+  const existing = whenLabel(item);
+  if (existing === "OVERDUE" || existing === "NOW") return "NOW";
+  if (existing === "TODAY") return "TODAY";
+  if (existing === "NO ACTION TODAY" || existing === "AWAITING CUSTOMER") return "LATER";
+  if (/^WAIT UNTIL/i.test(existing)) return existing;
+  if (existing === "USAGE DATA REQUIRED") return existing;
+  return existing;
 }
 
 function focusWatchItem(watchItemId) {
-  if (!watchItemId) return;
-  ccFilter = "ALL";
-  renderCommandCentre();
-  const target = document.querySelector(`[data-watch-id="${CSS.escape(watchItemId)}"]`);
-  if (!target) return;
-  target.classList.add("cc-item-focused");
-  target.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  target.focus({ preventScroll: true });
+  if (!watchItemId || !ccSnapshot) return;
+  const item = (ccSnapshot.watch_items || []).find((row) => row.id === watchItemId);
+  if (item) openCcDetailDialog(item);
 }
 
-function briefActionRow(row, onClick) {
-  const button = el("button", {
-    type: "button",
-    class: "cc-brief-row",
-    "aria-label": `${row.organisation_name} ${productLabel(row.product_scope)} ${words(row.next_best_action)}`,
+function appendSignalBlock(parent, label, signals) {
+  if (!signals?.length) return;
+  const text = signals.map((signal) => signal.message).filter(Boolean).join(" · ");
+  if (!text) return;
+  appendKv(parent, label, text);
+}
+
+function renderCcCompactCard(item) {
+  const card = el("article", {
+    class: "cc-item cc-item-compact",
+    tabindex: "0",
+    role: "button",
+    "data-watch-id": item.id,
+    "aria-label": `${item.organisation_name || "Unknown"} ${urgencyLabel(item)} ${words(item.next_best_action)}`,
   });
-  button.append(
-    el("div", { class: "cc-brief-row-title", text: `${row.organisation_name} · ${productLabel(row.product_scope)}` }),
+  const head = el("div", { class: "cc-item-head" });
+  head.append(
+    el("strong", { class: "cc-item-org", text: item.organisation_name || "Unknown" }),
+    el("span", { class: "cc-item-urgency", text: urgencyLabel(item) }),
   );
-  if (row.recommended_contact_name) {
-    button.append(el("div", { class: "cc-brief-row-meta", text: row.recommended_contact_name }));
-  }
-  button.append(el("div", { class: "cc-brief-row-action", text: `${words(row.next_best_action)} · ${row.when_label || "NOW"}` }));
-  if (row.reason) button.append(el("div", { class: "cc-brief-row-reason", text: row.reason }));
-  button.addEventListener("click", () => onClick(row.watch_item_id));
-  return button;
-}
-
-function renderDailyBrief(brief, snapshot) {
-  const card = el("section", { class: "cc-brief" });
-  const header = el("div", { class: "cc-brief-header" }, [
-    el("h2", { text: "Daily sales brief" }),
-    el("div", { class: "cc-brief-freshness", text: `As of ${formatWhen(brief.generated_at || snapshot.generated_at)}` }),
-  ]);
-  card.append(header);
-
-  const doFirst = briefDoFirstActions(brief, snapshot);
-  const doSection = el("div", { class: "cc-brief-section" });
-  doSection.append(el("div", { class: "cc-brief-section-head" }, [
-    el("h3", { text: "Do first" }),
-    el("span", { class: "cc-brief-count", text: `${doFirst.length} action${doFirst.length === 1 ? "" : "s"}` }),
-  ]));
-  if (!doFirst.length) {
-    doSection.append(el("p", { class: "cc-brief-empty", text: "Nothing requires immediate customer contact." }));
-  } else {
-    const rows = el("div", { class: "cc-brief-rows" });
-    for (const row of doFirst) rows.append(briefActionRow(row, focusWatchItem));
-    doSection.append(rows);
-  }
-  card.append(doSection);
-
-  const waitItems = briefWaitItems(brief, snapshot);
-  const waitSection = el("div", { class: "cc-brief-section" });
-  waitSection.append(el("div", { class: "cc-brief-section-head" }, [
-    el("h3", { text: "Wait / don't chase" }),
-    el("span", { class: "cc-brief-count", text: `${waitItems.length} organisation${waitItems.length === 1 ? "" : "s"}` }),
-  ]));
-  const waitVisible = ccBriefWaitExpanded ? waitItems : waitItems.slice(0, 5);
-  if (!waitItems.length) {
-    waitSection.append(el("p", { class: "cc-brief-empty", text: "No organisations are on hold today." }));
-  } else {
-    const rows = el("div", { class: "cc-brief-rows" });
-    for (const row of waitVisible) {
-      const button = el("button", {
-        type: "button",
-        class: "cc-brief-row",
-        "aria-label": `${row.organisation_name} ${row.wait_kind.replaceAll("_", " ")}`,
-      });
-      button.append(el("div", { class: "cc-brief-row-title", text: row.organisation_name }));
-      const label = row.wait_kind === "WAIT_UNTIL"
-        ? row.when_label || "WAIT UNTIL scheduled time"
-        : row.wait_kind === "WAITING_ON_CUSTOMER"
-          ? "WAITING ON CUSTOMER"
-          : "NO ACTION TODAY";
-      button.append(el("div", { class: "cc-brief-row-action", text: label }));
-      if (row.reason) button.append(el("div", { class: "cc-brief-row-reason", text: row.reason }));
-      button.addEventListener("click", () => focusWatchItem(row.watch_item_id));
-      rows.append(button);
+  card.append(head);
+  card.append(el("div", { class: "cc-item-product muted", text: productScopeLabel(item.product_scope) }));
+  const person = item.recommended_contact_name || item.primary_contact_name;
+  if (person) card.append(el("div", { class: "cc-item-person", text: person }));
+  card.append(el("div", { class: "cc-item-action", text: words(item.next_best_action) }));
+  card.append(el("span", { class: "cc-item-chevron", "aria-hidden": "true", text: "›" }));
+  const openDetail = () => openCcDetailDialog(item);
+  card.addEventListener("click", openDetail);
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openDetail();
     }
-    waitSection.append(rows);
-    const hidden = waitItems.length - waitVisible.length;
-    if (hidden > 0 && !ccBriefWaitExpanded) {
-      const more = el("button", {
-        type: "button",
-        class: "cc-brief-more",
-        text: `+ ${hidden} more in the queue below`,
-      });
-      more.addEventListener("click", () => {
-        ccBriefWaitExpanded = true;
-        renderCommandCentre();
-      });
-      waitSection.append(more);
-    } else if (ccBriefWaitExpanded && waitItems.length > 5) {
-      const less = el("button", { type: "button", class: "cc-brief-more", text: "Show fewer" });
-      less.addEventListener("click", () => {
-        ccBriefWaitExpanded = false;
-        renderCommandCentre();
-      });
-      waitSection.append(less);
-    }
-  }
-  card.append(waitSection);
-
-  const researchItems = briefResearchItems(brief, snapshot);
-  const researchSection = el("div", { class: "cc-brief-section" });
-  researchSection.append(el("div", { class: "cc-brief-section-head" }, [
-    el("h3", { text: "Research / data required" }),
-    el("span", { class: "cc-brief-count", text: `${researchItems.length} item${researchItems.length === 1 ? "" : "s"}` }),
-  ]));
-  if (!researchItems.length) {
-    researchSection.append(el("p", { class: "cc-brief-empty", text: "No internal research or data gaps flagged." }));
-  } else {
-    const rows = el("div", { class: "cc-brief-rows" });
-    for (const row of researchItems) {
-      const button = el("button", {
-        type: "button",
-        class: "cc-brief-row",
-        "aria-label": `${row.organisation_name} ${words(row.next_best_action)}`,
-      });
-      button.append(el("div", { class: "cc-brief-row-title", text: `${row.organisation_name} · ${productLabel(row.product_scope)}` }));
-      const actionLabel = row.actionability_kind === "DATA_REQUIRED" ? "USAGE DATA REQUIRED" : words(row.next_best_action);
-      button.append(el("div", { class: "cc-brief-row-action", text: actionLabel }));
-      if (row.reason) button.append(el("div", { class: "cc-brief-row-reason", text: row.reason }));
-      button.addEventListener("click", () => focusWatchItem(row.watch_item_id));
-      rows.append(button);
-    }
-    researchSection.append(rows);
-  }
-  card.append(researchSection);
-
-  const watchBullets = briefCommercialWatch(brief);
-  if (watchBullets.length) {
-    const watchSection = el("div", { class: "cc-brief-section" });
-    watchSection.append(el("div", { class: "cc-brief-section-head" }, [el("h3", { text: "Commercial watch" })]));
-    const list = el("ul", { class: "cc-brief-watch" });
-    for (const bullet of watchBullets.slice(0, 5)) list.append(el("li", { text: bullet }));
-    watchSection.append(list);
-    card.append(watchSection);
-  }
-
-  if (brief.warnings?.length) {
-    const warn = el("p", { class: "warn-text", text: `${brief.warnings.length} analysis warning(s) — see queue cards for detail.` });
-    card.append(warn);
-  }
+  });
   return card;
 }
 
-function ccMatches(item, filter) {
-  if (filter === "ALL") return true;
-  if (filter === "PORTAL_GENIE" || filter === "NAGGING_PANDA") return item.product_scope === filter;
-  if (filter === "ACTION_TODAY") return (item.priority === "P0" || item.priority === "P1") && item.executability === "EXECUTABLE_NOW";
-  if (filter === "STALLED") return item.stalled_state === "STALLED" || item.stalled_state === "WATCH";
-  if (filter === "WAITING") return item.priority === "P4" || item.next_best_action === "WAIT";
-  if (filter === "WATCH") return item.stalled_state === "WATCH";
-  if (filter === "NO_ACTION") return item.priority === "P5" || item.next_best_action === "NO_ACTION";
+function renderCcWorkSection(title, items, emptyMessage) {
+  const section = el("section", { class: "cc-work-section" });
+  section.append(el("div", { class: "cc-work-section-head" }, [
+    el("h3", { text: title }),
+    el("span", { class: "cc-work-count", text: `${items.length}` }),
+  ]));
+  if (!items.length) {
+    section.append(el("p", { class: "cc-work-empty muted", text: emptyMessage }));
+  } else {
+    const list = el("div", { class: "cc-queue" });
+    for (const item of items) list.append(renderCcCompactCard(item));
+    section.append(list);
+  }
+  return section;
+}
+
+function isWorkingRecommendation(item) {
+  if (isPrimaryQueueExcluded(item)) return false;
+  if (item.operator_control?.controlled && item.operator_control.actionable === false) return false;
   return true;
+}
+
+function ccQueueInsightCounts(items) {
+  const working = items.filter(isWorkingRecommendation);
+  let actNow = 0;
+  let next = 0;
+  let later = 0;
+  let waiting = 0;
+  for (const item of working) {
+    if (item.effective_queue_state === "WAIT") {
+      waiting += 1;
+      continue;
+    }
+    const urgency = urgencyLabel(item);
+    if (urgency === "NOW" || urgency === "TODAY") actNow += 1;
+    else if (urgency === "THIS WEEK") next += 1;
+    else later += 1;
+  }
+  return { actNow, next, later, waiting };
+}
+
+function ccSystemSummary(snapshot, scan) {
+  const monitored = scan?.universe_size ?? snapshot.organisations_discovered ?? 0;
+  const analysed = (snapshot.analyses_reused ?? 0) + (snapshot.analyses_refreshed ?? 0);
+  const warnings = (snapshot.failures?.length ?? 0) + (snapshot.brief?.warnings?.length ?? 0);
+  return `${monitored} organisations monitored · ${analysed} analysed · ${warnings} warning${warnings === 1 ? "" : "s"}`;
+}
+
+function renderCcCommercialSnapshot(snapshot) {
+  const counts = ccQueueInsightCounts(snapshot.watch_items || []);
+  const panel = el("div", { class: "cc-snapshot" });
+  const grid = el("div", { class: "cc-snapshot-counts" });
+  for (const [label, value] of [
+    ["Act now", counts.actNow],
+    ["Next", counts.next],
+    ["Later", counts.later],
+    ["Waiting", counts.waiting],
+  ]) {
+    const cell = el("div", { class: "cc-snapshot-count" });
+    cell.append(el("span", { class: "cc-snapshot-count-value", text: String(value) }));
+    cell.append(el("span", { class: "cc-snapshot-count-label", text: label }));
+    grid.append(cell);
+  }
+  panel.append(grid);
+  panel.append(el("p", { class: "cc-snapshot-summary muted", text: ccSystemSummary(snapshot, ccScan) }));
+  panel.append(el("p", { class: "cc-snapshot-asof muted", text: `As of ${formatWhen(snapshot.generated_at)}` }));
+
+  const actions = el("div", { class: "row cc-snapshot-actions" });
+  const check = el("button", { type: "button", class: "secondary", text: "Check for changes" });
+  check.addEventListener("click", () => runCcScan());
+  const refresh = el("button", { type: "button", class: "secondary", text: "Refresh changed items" });
+  refresh.addEventListener("click", () => runCcBuild("build_changed"));
+  const full = el("button", { type: "button", class: "secondary", text: "Full rebuild" });
+  full.addEventListener("click", () => {
+    if (confirm("Full rebuild may require many OpenAI calls. Continue?")) runCcBuild("full_rebuild");
+  });
+  actions.append(check, refresh, full);
+  panel.append(actions);
+  return panel;
+}
+
+function renderCcWorkQueue(snapshot) {
+  const items = snapshot.watch_items || [];
+  const focusNow = items.filter(isFocusNowItem);
+  const next = items.filter(isNextItem);
+  const wrap = el("div", { class: "cc-work" });
+  wrap.append(renderCcWorkSection("Focus now", focusNow, "Nothing needs immediate customer contact."));
+  wrap.append(renderCcWorkSection("Next", next, "No further queued actions right now."));
+  return wrap;
+}
+
+function ensureCcDetailDialog() {
+  if (ccDetailDialog) return ccDetailDialog;
+  const dialog = el("dialog", { class: "cc-detail-dialog", id: "cc-detail-dialog" });
+  const panel = el("div", { class: "cc-detail-panel" });
+  const header = el("div", { class: "cc-detail-header" });
+  const title = el("h3", { id: "cc-detail-title", text: "Recommendation" });
+  const close = el("button", { type: "button", class: "secondary cc-detail-close", text: "Close", "aria-label": "Close" });
+  header.append(title, close);
+  const body = el("div", { class: "cc-detail-body", id: "cc-detail-body" });
+  const actions = el("div", { class: "cc-detail-actions row", id: "cc-detail-actions" });
+  panel.append(header, body, actions);
+  dialog.append(panel);
+  close.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("close", () => {
+    ccDetailItem = null;
+    body.replaceChildren();
+    actions.replaceChildren();
+  });
+  document.body.append(dialog);
+  ccDetailDialog = dialog;
+  return dialog;
+}
+
+function renderCcDetailContent(item) {
+  const body = $("cc-detail-body");
+  const actions = $("cc-detail-actions");
+  if (!body || !actions) return;
+  body.replaceChildren();
+  actions.replaceChildren();
+
+  $("cc-detail-title").textContent = item.organisation_name || "Unknown";
+  body.append(el("p", { class: "cc-detail-lede muted", text: `${productScopeLabel(item.product_scope)} · ${urgencyLabel(item)} · ${item.priority}` }));
+
+  if (item.commercial_summary) {
+    body.append(el("h4", { class: "cc-detail-heading", text: "Why this client matters" }));
+    body.append(el("p", { text: item.commercial_summary }));
+  }
+
+  body.append(el("h4", { class: "cc-detail-heading", text: "Recommended action" }));
+  appendKv(body, "Action", words(item.next_best_action));
+  appendKv(body, "Timing", whenLabel(item));
+  if (item.why_this_action) appendKv(body, "Reasoning", item.why_this_action);
+  if (item.recommended_contact_name || item.primary_contact_name) {
+    appendKv(body, "Recommended person", item.recommended_contact_name || item.primary_contact_name);
+  }
+  if (item.recommended_contact_reason) appendKv(body, "Person rationale", item.recommended_contact_reason);
+
+  if (item.last_meaningful_activity_at || item.next_commitment_at) {
+    body.append(el("h4", { class: "cc-detail-heading", text: "Recent activity & commitments" }));
+    appendKv(body, "Last meaningful activity", item.last_meaningful_activity_at ? formatWhen(item.last_meaningful_activity_at) : undefined);
+    appendKv(body, "Next commitment", item.next_commitment_at ? formatWhen(item.next_commitment_at) : undefined);
+  }
+
+  if (item.relationship_state || item.product_registration_state) {
+    body.append(el("h4", { class: "cc-detail-heading", text: "Product relationship" }));
+    appendKv(body, "Relationship", item.relationship_state ? words(item.relationship_state) : undefined);
+    appendKv(body, "Registration", item.product_registration_state ? words(item.product_registration_state) : undefined);
+    if (item.product_registration_provenance?.stage) {
+      appendKv(body, "Registration source", item.product_registration_provenance.stage);
+    }
+  }
+
+  appendSignalBlock(body, "Urgency signals", item.urgency_signals);
+  appendSignalBlock(body, "Opportunity signals", item.opportunity_signals);
+  appendSignalBlock(body, "Risk signals", item.risk_signals);
+  appendSignalBlock(body, "Usage evidence", item.usage_signals);
+  appendSignalBlock(body, "Data quality / unknowns", item.data_quality_signals);
+
+  if (item.stalled_reasons?.length) appendKv(body, "Stalled explanation", item.stalled_reasons.join(" "));
+  appendKv(body, "Confidence", item.confidence);
+  appendKv(body, "System priority", item.system_priority_band || item.priority);
+  if (item.why_ranked) appendKv(body, "Rank explanation", item.why_ranked);
+
+  const badgeText = operatorControlBadgeText(item);
+  if (badgeText || item.operator_control?.suppression_reason) {
+    body.append(el("h4", { class: "cc-detail-heading", text: "Operator control" }));
+    if (badgeText) body.append(el("p", { class: "cc-operator-badge", text: badgeText }));
+    appendKv(body, "Control detail", item.operator_control?.suppression_reason);
+    appendKv(body, "Reopen note", item.operator_control?.reopen_explanation);
+  }
+
+  if (item.recommendation_fingerprint || item.evidence_snapshot_ref || item.evidence_refs?.length) {
+    body.append(el("h4", { class: "cc-detail-heading", text: "Evidence & provenance" }));
+    appendKv(body, "Recommendation fingerprint", item.recommendation_fingerprint);
+    appendKv(body, "Evidence snapshot", item.evidence_snapshot_ref);
+    if (item.evidence_refs?.length) appendKv(body, "Evidence refs", item.evidence_refs.join(", "));
+    appendKv(body, "Analysis generated", item.analysis_generated_at ? formatWhen(item.analysis_generated_at) : undefined);
+    appendKv(body, "Reuse", item.reuse ? words(item.reuse) : undefined);
+  }
+
+  const manageBtn = el("button", { type: "button", class: "secondary cc-manage-btn", text: "Manage recommendation" });
+  manageBtn.addEventListener("click", () => {
+    ccDetailDialog?.close();
+    openManageDialog(item);
+  });
+  actions.append(manageBtn);
+  if (item.source_record?.module && item.source_record?.recordId) {
+    const crmBtn = el("button", { type: "button", class: "secondary", text: "Open in CRM Explorer" });
+    crmBtn.addEventListener("click", () => {
+      ccDetailDialog?.close();
+      location.hash = "explorer";
+      openRelationship(item.source_record.module, item.source_record.recordId);
+    });
+    actions.append(crmBtn);
+  }
+}
+
+function openCcDetailDialog(item) {
+  ccDetailItem = item;
+  const dialog = ensureCcDetailDialog();
+  renderCcDetailContent(item);
+  dialog.showModal();
 }
 
 function whenLabel(item) {
@@ -1739,12 +1816,18 @@ function zohoWriteContextFromWatchItem(item) {
     source_record: item.source_record,
     contact_ids: item.contact_ids || [],
     lead_ids: item.lead_ids || [],
+    deal_ids: item.deal_ids || [],
   };
 }
 
 function zohoWriteSucceeded(result) {
   const write = result?.zohoWrite;
   if (!write?.attempted) return true;
+  if (write.contact && write.deal) {
+    if (write.contact.attempted && !write.contact.ok) return false;
+    if (write.deal.attempted && !write.deal.ok) return false;
+    return true;
+  }
   return Boolean(write.ok);
 }
 
@@ -2447,123 +2530,56 @@ function renderCommandCentre() {
     scanBtn.addEventListener("click", () => runCcScan());
     empty.append(scanBtn);
     root.append(empty);
-    if (ccScan) root.append(renderCcScan(ccScan, true));
+    if (ccScan) root.append(renderCcScanDetails(ccScan, true));
     return;
   }
-  status.textContent = `Last intelligence refresh ${formatWhen(snapshot.generated_at)}. ${snapshot.tokens?.openai_calls ?? 0} OpenAI call(s) · ${snapshot.tokens?.total_tokens || 0} tokens · ${snapshot.duration_ms} ms. Nothing was written to Zoho.`;
-  const kpis = el("div", { class: "snapshot" });
-  kpis.append(
-    stat("Needs action today", String(snapshot.needs_action_today ?? 0)),
-    stat("Stalled", String(snapshot.stalled_count ?? 0)),
-    stat("Waiting / do not chase", String(snapshot.waiting_count ?? 0)),
-    stat("Active opportunities", String(snapshot.active_opportunities ?? 0)),
-    stat("Analysis warnings", String((snapshot.failures || []).length)),
-  );
-  root.append(kpis);
+  status.textContent = "";
 
-  const actions = el("div", { class: "row cc-actions" });
-  const check = el("button", { type: "button", class: "secondary", text: "Check for changes" });
-  check.addEventListener("click", () => runCcScan());
-  const refresh = el("button", { type: "button", text: "Refresh changed items" });
-  refresh.addEventListener("click", () => runCcBuild("build_changed"));
-  const full = el("button", { type: "button", class: "secondary", text: "Full rebuild" });
-  full.addEventListener("click", () => {
-    if (confirm("Full rebuild may require many OpenAI calls. Continue?")) runCcBuild("full_rebuild");
-  });
-  actions.append(check, refresh, full);
-  root.append(actions);
-  if (snapshot.truncated_reason) root.append(el("p", { class: "warn-text", text: snapshot.truncated_reason }));
-  if (ccScan) root.append(renderCcScan(ccScan, false));
-
-  const brief = snapshot.brief;
-  if (brief) root.append(renderDailyBrief(brief, snapshot));
-
-  const filters = el("div", { class: "badge-row cc-filters" });
-  for (const filter of ["ALL", "PORTAL_GENIE", "NAGGING_PANDA", "ACTION_TODAY", "STALLED", "WAITING", "WATCH", "NO_ACTION"]) {
-    const btn = el("button", { type: "button", class: `secondary${ccFilter === filter ? " active-filter" : ""}`, text: words(filter) });
-    btn.addEventListener("click", () => { ccFilter = filter; renderCommandCentre(); });
-    filters.append(btn);
+  root.append(renderCcCommercialSnapshot(snapshot));
+  root.append(renderCcWorkQueue(snapshot));
+  if (ccScan || snapshot.truncated_reason) {
+    root.append(renderCcScanDetails(ccScan, false, snapshot));
   }
-  root.append(filters);
-
-  const items = (snapshot.watch_items || []).filter((item) => ccMatches(item, ccFilter));
-  if (!items.length) {
-    root.append(el("p", { class: "muted", text: "Nothing in this filter. Waiting / future-dated items stay out of the action queue on purpose." }));
-    return;
-  }
-  const list = el("div", { class: "cc-queue" });
-  for (const item of items) {
-    const card = el("article", { class: "cc-item", tabindex: "0", role: "link", "data-watch-id": item.id });
-    card.append(el("div", { class: "badge-row" }, [
-      el("span", { class: "pill", text: item.priority }),
-      el("span", { class: "pill", text: watchItemProductLabel(item) }),
-      el("span", { class: "pill", text: words(item.stalled_state) }),
-    ]));
-    card.append(el("strong", { text: item.organisation_name || "UNKNOWN" }));
-    if (item.commercial_summary) card.append(el("p", { class: "cc-situation", text: item.commercial_summary }));
-    if (item.recommended_contact_name) {
-      appendKv(card, "Recommended contact", item.recommended_contact_name);
-      if (item.recommended_contact_reason) appendKv(card, "Contact reason", item.recommended_contact_reason);
-    } else if (item.next_best_action !== "NO_ACTION") {
-      appendKv(card, "Recommended contact", "UNKNOWN");
-    }
-    appendKv(card, "Next action", words(item.next_best_action));
-    appendKv(card, "When", whenLabel(item));
-    appendKv(card, "Why", item.why_this_action);
-    appendKv(card, "Confidence", item.confidence);
-    if (item.stalled_reasons?.length && (item.stalled_state === "STALLED" || item.stalled_state === "WATCH" || item.stalled_state === "INSUFFICIENT_EVIDENCE" || item.stalled_state === "WAITING_ON_CUSTOMER" || item.stalled_state === "WAITING_ON_US")) {
-      appendKv(card, "Stalled reason", item.stalled_reasons.join(" "));
-    }
-    const badgeText = operatorControlBadgeText(item);
-    if (badgeText) card.append(el("p", { class: "cc-operator-badge", text: badgeText }));
-    const actions = el("div", { class: "cc-item-actions row" });
-    const manageBtn = el("button", { type: "button", class: "secondary cc-manage-btn", text: "Manage" });
-    manageBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openManageDialog(item);
-    });
-    actions.append(manageBtn);
-    card.append(actions);
-    const open = () => {
-      if (!item.source_record?.module || !item.source_record?.recordId) return;
-      location.hash = "explorer";
-      openRelationship(item.source_record.module, item.source_record.recordId);
-    };
-    card.addEventListener("click", open);
-    card.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        open();
-      }
-    });
-    list.append(card);
-  }
-  root.append(list);
 }
 
-function renderCcScan(scan, allowBuild) {
-  const card = el("div", { class: "card callout" });
-  card.append(el("h3", { text: "Scan estimate" }));
+function renderCcScanDetails(scan, allowBuild, snapshot) {
+  const details = el("details", { class: "cc-scan-details" });
+  details.append(el("summary", { text: "Scan details" }));
+  const body = el("div", { class: "cc-scan-details-body" });
+  if (!scan) {
+    body.append(el("p", { class: "muted", text: "Run Check for changes to refresh the scan estimate." }));
+    if (snapshot?.truncated_reason) body.append(el("p", { class: "warn-text", text: snapshot.truncated_reason }));
+    details.append(body);
+    return details;
+  }
   const universe = scan.universe_size && scan.universe_size !== scan.organisations_discovered
     ? `${scan.organisations_discovered} of ${scan.universe_size}`
     : String(scan.organisations_discovered);
-  card.append(el("p", { text: `${universe} organisations discovered. ${scan.analyses_reusable} analyses can be reused. ${scan.analyses_require_refresh} require refresh.` }));
-  card.append(el("p", { class: "muted", text: `OpenAI would be called for ${scan.openai_would_be_called} organisation(s). Scan itself used 0 OpenAI calls.` }));
-  if (scan.truncated_reason) card.append(el("p", { class: "warn-text", text: scan.truncated_reason }));
-  for (const warning of scan.retrieval_warnings || []) card.append(el("p", { class: "warn-text", text: warning }));
+  body.append(el("p", { text: `${universe} organisations in last scan. ${scan.analyses_reusable} analyses can be reused. ${scan.analyses_require_refresh} require refresh.` }));
+  body.append(el("p", { class: "muted", text: `OpenAI would be called for ${scan.openai_would_be_called} organisation(s). Scan itself used 0 OpenAI calls.` }));
+  if (scan.truncated_reason) body.append(el("p", { class: "warn-text", text: scan.truncated_reason }));
+  if (snapshot?.truncated_reason && snapshot.truncated_reason !== scan.truncated_reason) {
+    body.append(el("p", { class: "warn-text", text: snapshot.truncated_reason }));
+  }
+  for (const warning of scan.retrieval_warnings || []) body.append(el("p", { class: "warn-text", text: warning }));
   if (scan.organisations?.length) {
     const reuseNotes = scan.organisations
       .filter((item) => item.reuse_reason)
       .slice(0, 8)
       .map((item) => `${item.organisation_name}: ${item.reuse} — ${item.reuse_reason}`);
-    if (reuseNotes.length) card.append(listBlock("Why reuse or refresh", reuseNotes));
+    if (reuseNotes.length) body.append(listBlock("Why reuse or refresh", reuseNotes));
   }
   if (allowBuild) {
-    const build = el("button", { type: "button", text: "Build Command Centre" });
+    const build = el("button", { type: "button", class: "secondary", text: "Build Command Centre" });
     build.addEventListener("click", () => runCcBuild("build_changed"));
-    card.append(build);
+    body.append(build);
   }
-  return card;
+  details.append(body);
+  return details;
+}
+
+function renderCcScan(scan, allowBuild) {
+  return renderCcScanDetails(scan, allowBuild);
 }
 
 async function loadCommandCentre() {

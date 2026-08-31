@@ -85,14 +85,28 @@ export function createOperatorDecision(input: OperatorDecisionInput): OperatorDe
 }
 
 export function attachOperatorDecisionZohoNote(id: string, zohoNoteId: string): OperatorDecision {
+  return attachOperatorDecisionContextZohoNotes(id, { contact_zoho_note_id: zohoNoteId });
+}
+
+export function attachOperatorDecisionContextZohoNotes(
+  id: string,
+  notes: { contact_zoho_note_id?: string; deal_zoho_note_id?: string },
+): OperatorDecision {
   const store = readStore();
   const index = store.decisions.findIndex((decision) => decision.id === id);
   if (index < 0) throw new OperatorDecisionValidationError("Operator decision not found");
   const existing = store.decisions[index]!;
+  const writtenAt = new Date().toISOString();
   const updated: OperatorDecision = {
     ...existing,
-    zoho_note_id: zohoNoteId,
-    zoho_written_at: new Date().toISOString(),
+    ...(notes.contact_zoho_note_id
+      ? {
+          contact_zoho_note_id: notes.contact_zoho_note_id,
+          zoho_note_id: notes.contact_zoho_note_id,
+        }
+      : {}),
+    ...(notes.deal_zoho_note_id ? { deal_zoho_note_id: notes.deal_zoho_note_id } : {}),
+    zoho_written_at: writtenAt,
   };
   store.decisions[index] = updated;
   writeStore(store);
