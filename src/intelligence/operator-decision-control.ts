@@ -262,6 +262,7 @@ function decisionBlocksRecommendation(
       return { blocked: false, reopened: false };
     }
 
+    case "CONTEXT_ADDED":
     case "REVOKED":
       return { blocked: false, reopened: false };
 
@@ -305,6 +306,8 @@ function effectForDecision(type: OperatorDecisionType): SuppressionEffect {
     case "WRONG_ACTION":
     case "WRONG_PERSON":
       return "SUPPRESS_RECOMMENDATION";
+    case "CONTEXT_ADDED":
+      return "NONE";
     default:
       return "NONE";
   }

@@ -5,6 +5,7 @@ export const EVIDENCE_TYPES = [
   "ai_inference",
   "external_evidence",
   "operator_sales_event",
+  "operator_context",
   "unknown",
 ] as const;
 

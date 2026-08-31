@@ -30,7 +30,12 @@ import {
   membersFromGraph,
 } from "./org-graph.js";
 import { listSalesEvents } from "./sales-event-store.js";
+import { listOperatorDecisions } from "./operator-decision-store.js";
 import { buildSalesEventEvidence, salesEventsToTimeline } from "./sales-event-digest.js";
+import {
+  buildOperatorContextEvidence,
+  contextAddedDecisionsForOrganisation,
+} from "./operator-context-digest.js";
 import type { StoredAnalysis } from "./analysis-store.js";
 
 export type AnalyseInput = {
@@ -161,6 +166,10 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
     organisationIds: [organisationId, `contact:${input.module}:${input.recordId}`],
     contactIds: [contact.identity.recordId, ...graph.contacts.map((item) => item.recordId)],
   });
+  const operatorContextDecisions = contextAddedDecisionsForOrganisation(
+    listOperatorDecisions({ organisation_key: organisationId }),
+    organisationId,
+  );
   graph = { ...graph, organisationId, salesEvents };
 
   const members = membersFromGraph(graph, resolution.members);
@@ -287,6 +296,7 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
     ...organisation.evidence,
     ...reconstruction.evidence,
     ...buildSalesEventEvidence(salesEvents),
+    ...buildOperatorContextEvidence(operatorContextDecisions),
   ];
   const productEmails = (graph.emails.length ? graph.emails : input.diagnostic.emails.normalized ?? []).map((email) => ({
     subject: email.subject,
@@ -330,6 +340,7 @@ export async function analyseRelationship(input: AnalyseInput): Promise<StoredAn
     contradictions,
     graph,
     salesEvents,
+    operatorContextDecisions,
   });
 
   const started = Date.now();

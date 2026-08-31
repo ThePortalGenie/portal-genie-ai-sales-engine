@@ -646,3 +646,36 @@ test("SNOOZED requires future effective_until date", async () => {
     });
   });
 });
+
+test("CONTEXT_ADDED keeps item in DO FIRST after refresh-control", async () => {
+  await withStores(async () => {
+    const item = enrichedWatch();
+    writePortfolioSnapshot(minimalSnapshot([item]));
+    createOperatorDecision({
+      watch_item_id: item.id,
+      organisation_key: item.organisation_id,
+      product_scope: item.product_scope,
+      recommendation_fingerprint: item.recommendation_fingerprint!,
+      decision_context_snapshot: item.decision_context_snapshot,
+      evidence_snapshot_ref: item.evidence_snapshot_ref,
+      effective_from: EFFECTIVE_FROM,
+      decision_type: "CONTEXT_ADDED",
+      operator_note: "Sarah is the actual decision maker.",
+    });
+    const refreshed = refreshSnapshotOperatorControl(readPortfolioSnapshot()!);
+    assert.equal(refreshed.brief.do_first_actions.length, 1);
+    assert.equal(refreshed.watch_items[0]?.operator_control?.controlled, false);
+    assert.equal(refreshed.watch_items[0]?.effective_queue_state, "CUSTOMER_ACTION");
+    assert.equal(refreshed.watch_items[0]?.priority, "P1");
+    assert.equal(listSalesEvents().length, 0);
+    await withServer(async (base) => {
+      const listed = await fetch(`${base}/api/operator-decisions?watch_item_id=${encodeURIComponent(item.id)}`);
+      const body = await listed.json();
+      assert.equal(body.decisions.some((decision: { decision_type: string }) => decision.decision_type === "CONTEXT_ADDED"), true);
+      assert.equal(
+        body.decisions.some((decision: { decision_type: string }) => decision.decision_type === "WAITING"),
+        false,
+      );
+    });
+  });
+});

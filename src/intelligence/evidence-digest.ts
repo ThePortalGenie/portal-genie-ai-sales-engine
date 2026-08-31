@@ -7,6 +7,8 @@ import { orgEmailMetrics } from "./org-graph.js";
 import type { OrganisationEvidenceProfile } from "./org-intelligence.js";
 import { hasUnansweredOutboundSequence, trailingOutboundStreak } from "./unanswered-sequences.js";
 import { buildSalesEventTemporal, salesEventsToTimeline } from "./sales-event-digest.js";
+import { buildOperatorContextDigest } from "./operator-context-digest.js";
+import type { OperatorDecision } from "../domain/operator-decision.js";
 import type { SalesEvent } from "../domain/sales-event.js";
 
 export const DEFAULT_REASONING_CONTEXT_BUDGET_CHARS = 10_000;
@@ -157,6 +159,15 @@ export type CommercialEvidenceDigest = {
     follow_up_date?: string;
     provenance: string;
     layer: "operator_sales_event";
+  }>;
+  operator_context_notes: Array<{
+    id: string;
+    created_at: string;
+    product_scope: string;
+    watch_item_id: string;
+    note: string;
+    provenance: "OPERATOR";
+    layer: "operator_context";
   }>;
   sales_event_temporal: {
     as_of: string;
@@ -405,6 +416,7 @@ export function buildCommercialEvidenceDigest(options: {
   budget?: { maxChars: number };
   graph?: OrganisationGraph;
   salesEvents?: SalesEvent[];
+  operatorContextDecisions?: OperatorDecision[];
   asOf?: string;
 }): CommercialEvidenceDigest {
   const budget = options.budget ?? loadReasoningContextBudget();
@@ -413,6 +425,7 @@ export function buildCommercialEvidenceDigest(options: {
   const lastOutbound = latestAt(emails.filter((item) => item.direction === "outbound").map((item) => item.at));
   const graph = options.graph;
   const salesEvents = options.salesEvents ?? graph?.salesEvents ?? [];
+  const operatorContextDecisions = options.operatorContextDecisions ?? [];
   const asOf = options.asOf ?? new Date().toISOString();
   const selectedContactEmails = graph
     ? graph.emails.filter((email) => email.ownerRecordId === options.contact.identity.recordId)
@@ -475,6 +488,7 @@ export function buildCommercialEvidenceDigest(options: {
         cited.has(item.id) ||
         item.type === "unknown" ||
         item.type === "operator_sales_event" ||
+        item.type === "operator_context" ||
         /contradict/i.test(item.claim),
     )
     .slice(0, 32)
@@ -598,6 +612,7 @@ export function buildCommercialEvidenceDigest(options: {
         provenance: event.provenance,
         layer: "operator_sales_event" as const,
       })),
+    operator_context_notes: buildOperatorContextDigest(operatorContextDecisions),
     sales_event_temporal: buildSalesEventTemporal(salesEvents, asOf),
     historical_losses: historicalLosses.map((item) => ({
       product: item.product,

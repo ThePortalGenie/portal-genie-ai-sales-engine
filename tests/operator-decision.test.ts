@@ -28,6 +28,7 @@ import {
 } from "../src/intelligence/operator-decision-store.js";
 import { listSalesEvents } from "../src/intelligence/sales-event-store.js";
 import { parseSalesEventInput } from "../src/domain/sales-event.js";
+import { buildOperatorContextEvidence, buildOperatorContextDigest } from "../src/intelligence/operator-context-digest.js";
 
 function withDecisionStore<T>(run: () => T): T {
   const previous = process.env.OPERATOR_DECISIONS_STORE;
@@ -395,4 +396,57 @@ test("operator decision store file path is gitignored pattern", () => {
   replaceOperatorDecisionStore([]);
   const listed = listOperatorDecisions();
   assert.deepEqual(listed, []);
+});
+
+test("CONTEXT_ADDED does not suppress or alter queue control", () => {
+  const item = sampleWatchItem();
+  const context = parseOperatorDecisionInput(
+    decisionInput({ decision_type: "CONTEXT_ADDED", operator_note: "Sarah is the actual decision maker." }),
+  );
+  const evaluation = evaluateWatchItemControl({
+    watchItem: item,
+    decisions: [context],
+    context: { asOf: "2026-08-28T12:00:00.000Z", evidence_fingerprint: "fp-1", deal_ids: item.deal_ids, retrieval_ok: true },
+  });
+  assert.equal(evaluation.effect, "NONE");
+  assert.equal(evaluation.actionable, true);
+  assert.equal(evaluation.in_customer_action_queue, true);
+  assert.equal(evaluation.active_decisions.length, 0);
+  assert.equal(evaluation.reopened, false);
+});
+
+test("CONTEXT_ADDED requires operator_note", () => {
+  assert.throws(
+    () => parseOperatorDecisionInput(decisionInput({ decision_type: "CONTEXT_ADDED" })),
+    OperatorDecisionValidationError,
+  );
+});
+
+test("CONTEXT_ADDED does not create SalesEvent", () => {
+  withDecisionStore(() => {
+    const previous = process.env.SALES_EVENTS_STORE;
+    process.env.SALES_EVENTS_STORE = join(mkdtempSync(join(tmpdir(), "pg-se-")), "sales-events.json");
+    try {
+      createOperatorDecision(
+        decisionInput({ decision_type: "CONTEXT_ADDED", operator_note: "They review suppliers every November." }),
+      );
+      assert.equal(listSalesEvents().length, 0);
+    } finally {
+      if (previous === undefined) delete process.env.SALES_EVENTS_STORE;
+      else process.env.SALES_EVENTS_STORE = previous;
+    }
+  });
+});
+
+test("CONTEXT_ADDED becomes operator_context evidence for future analysis", () => {
+  const context = parseOperatorDecisionInput(
+    decisionInput({ decision_type: "CONTEXT_ADDED", operator_note: "Sarah is the actual decision maker." }),
+  );
+  const evidence = buildOperatorContextEvidence([context]);
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0]?.type, "operator_context");
+  assert.equal(evidence[0]?.source, "OPERATOR");
+  const digest = buildOperatorContextDigest([context]);
+  assert.equal(digest[0]?.layer, "operator_context");
+  assert.equal(digest[0]?.provenance, "OPERATOR");
 });

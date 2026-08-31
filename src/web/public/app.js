@@ -2245,9 +2245,9 @@ function openManageDialog(item, step = "menu") {
       }
       save.disabled = true;
       try {
-        await saveOperatorDecision(item, { decision_type: "WAITING", reason_code: "OTHER", operator_note: note.value.trim() });
+        await saveOperatorDecision(item, { decision_type: "CONTEXT_ADDED", operator_note: note.value.trim() });
         dialog.close();
-        $("cc-status").textContent = "Context saved.";
+        $("cc-status").textContent = "Context saved — queue unchanged.";
       } catch (error) {
         status.textContent = operatorMessage(error);
       } finally {

@@ -118,7 +118,8 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /operatorControlBadgeText/);
     assert.match(js, /\/api\/command-centre\/refresh-control/);
     assert.match(js, /Control history/);
-    assert.match(js, /Undo \/ Reopen/);
+    assert.match(js, /CONTEXT_ADDED/);
+    assert.match(js, /Context saved — queue unchanged/);
   });
 });
 

@@ -20,6 +20,7 @@ export const OPERATOR_DECISION_TYPES = [
   "WRONG_ACTION",
   "WRONG_PERSON",
   "ALREADY_HANDLED",
+  "CONTEXT_ADDED",
   "REVOKED",
 ] as const;
 export type OperatorDecisionType = (typeof OPERATOR_DECISION_TYPES)[number];
@@ -249,6 +250,9 @@ export function parseOperatorDecisionInput(input: OperatorDecisionInput, existin
   }
 
   const operatorNoteRaw = input.operator_note ?? existing?.operator_note;
+  if (decision_type === "CONTEXT_ADDED" && !(typeof operatorNoteRaw === "string" && operatorNoteRaw.trim())) {
+    throw new OperatorDecisionValidationError("CONTEXT_ADDED requires operator_note");
+  }
   if (typeof operatorNoteRaw === "string" && operatorNoteRaw.trim().length > 4000) {
     throw new OperatorDecisionValidationError("operator_note must be 4000 characters or fewer");
   }
