@@ -289,27 +289,54 @@ function partitionClustersForBuild(
   mode: "build_changed" | "full_rebuild" | "selected",
   thresholds: CommandCentreThresholds,
   usageImportedAt?: string,
-): { process: OrganisationCluster[]; deferred: number } {
-  if (mode === "full_rebuild") return { process: clusters, deferred: 0 };
+  asOf?: string,
+): {
+  process: OrganisationCluster[];
+  deferred: number;
+  reusable: number;
+  freshRefresh: number;
+  freshInitial: number;
+} {
+  if (mode === "full_rebuild") {
+    return { process: clusters, deferred: 0, reusable: 0, freshRefresh: clusters.length, freshInitial: 0 };
+  }
 
   const reusable: OrganisationCluster[] = [];
-  const needsFresh: OrganisationCluster[] = [];
+  const needsRefresh: OrganisationCluster[] = [];
+  const neverAnalysed: OrganisationCluster[] = [];
   for (const cluster of clusters) {
     const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
     const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
     if (decision.reuse === "reuse") reusable.push(cluster);
-    else needsFresh.push(cluster);
+    else if (decision.reuse === "missing") neverAnalysed.push(cluster);
+    else needsRefresh.push(cluster);
   }
 
   if (mode === "selected") {
-    return { process: [...reusable, ...needsFresh], deferred: 0 };
+    return {
+      process: [...reusable, ...needsRefresh, ...neverAnalysed],
+      deferred: 0,
+      reusable: reusable.length,
+      freshRefresh: needsRefresh.length,
+      freshInitial: neverAnalysed.length,
+    };
   }
 
   const freshCap = thresholds.maxFreshOrganisationAnalysesPerBuild;
-  const allowedFresh = needsFresh.slice(0, freshCap);
+  const refreshBatch = needsRefresh.slice(0, freshCap);
+  const remainingFresh = Math.max(0, freshCap - refreshBatch.length);
+  const rankedNever = rankClustersForCandidateSelection(
+    neverAnalysed,
+    asOf ?? new Date().toISOString(),
+    thresholds.timeZone,
+  );
+  const initialBatch = rankedNever.slice(0, remainingFresh);
   return {
-    process: [...reusable, ...allowedFresh],
-    deferred: Math.max(0, needsFresh.length - allowedFresh.length),
+    process: [...reusable, ...refreshBatch, ...initialBatch],
+    deferred: needsRefresh.length - refreshBatch.length + (neverAnalysed.length - initialBatch.length),
+    reusable: reusable.length,
+    freshRefresh: refreshBatch.length,
+    freshInitial: initialBatch.length,
   };
 }
 
@@ -338,6 +365,7 @@ export async function scanCommandCentre(
     ? clusters.filter((item) => options.organisationIds!.includes(item.organisationId))
     : selectClusters(clusters, maxOrganisations, asOf, thresholds.timeZone);
   const candidateAudit = candidateAuditForSelection(selected);
+  const buildProjection = partitionClustersForBuild(selected, "build_changed", thresholds, usageImportedAt, asOf);
   const organisations = selected.map((cluster) => {
     const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
     const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
@@ -368,6 +396,12 @@ export async function scanCommandCentre(
       ...candidateAudit,
       max_candidate_organisations: maxOrganisations ?? clusters.length,
     },
+    build_projection: {
+      would_analyse: buildProjection.process.length,
+      would_reuse: buildProjection.reusable,
+      would_fresh_analyse: buildProjection.freshRefresh + buildProjection.freshInitial,
+      would_defer: buildProjection.deferred,
+    },
     selection_method: COMMAND_CENTRE_SELECTION_METHOD,
     analyses_reusable: organisations.filter((item) => item.reuse === "reuse").length,
     analyses_require_refresh: organisations.filter((item) => item.reuse !== "reuse").length,
@@ -393,7 +427,7 @@ export async function scanCommandCentre(
         };
       }),
     tokens: { openai_calls: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-    openai_would_be_called: organisations.filter((item) => item.reuse !== "reuse").length,
+    openai_would_be_called: buildProjection.freshRefresh + buildProjection.freshInitial,
   };
   if (options.persist !== false) writeLastScan(estimate);
   return estimate;
@@ -438,6 +472,7 @@ export async function buildCommandCentre(
     options.mode,
     thresholds,
     usageImportedAt,
+    asOf,
   );
 
   const failures: PortfolioFailure[] = [...discovered.failures];
@@ -484,13 +519,17 @@ export async function buildCommandCentre(
     outputTokens += synthesized.tokens.output;
   }
 
+  const organisationsAnalysed = new Set(items.map((item) => item.organisation_id)).size;
+
   const snapshot: PortfolioSnapshot = {
     generated_at: asOf,
     run_id: `cc-${randomUUID()}`,
     duration_ms: Date.now() - started,
     mode: options.mode,
-    organisations_discovered: clusters.length,
+    organisations_discovered: organisationsAnalysed,
     universe_size: universe.length,
+    candidates_selected: clusters.length,
+    organisations_analysed: organisationsAnalysed,
     watch_items: items,
     ranking_note: PRIORITY_TIEBREAK,
     stalled_count: items.filter((item) => item.stalled_state === "STALLED").length,
@@ -520,7 +559,7 @@ export async function buildCommandCentre(
     truncated: discovered.truncated || clusters.length < universe.length || analysesDeferred > 0,
     truncated_reason:
       analysesDeferred > 0
-        ? `Fresh organisation analysis deferred for ${analysesDeferred} candidate(s). Reusable analyses were included; run Build again to expand progressively (max ${thresholds.maxFreshOrganisationAnalysesPerBuild} fresh per build_changed).`
+        ? `Progressive analysis: ${organisationsAnalysed} of ${clusters.length} selected candidates analysed; ${analysesDeferred} awaiting fresh analysis (max ${thresholds.maxFreshOrganisationAnalysesPerBuild} new per build).`
         : clusters.length < universe.length
           ? `Candidate analysis limited to ${clusters.length} organisations of ${universe.length} discovered. Full universe remains available for deterministic selection.`
           : discovered.truncated
@@ -742,6 +781,16 @@ export function enrichWatchItemsForOperatorControl(
     decision_context_snapshot: decisionContextSnapshotFromWatchItem(item),
     evidence_snapshot_ref: evidenceByOrganisation.get(item.organisation_id)?.evidence_fingerprint,
   }));
+}
+
+export function _testOnlyPartitionClustersForBuild(
+  clusters: OrganisationCluster[],
+  mode: "build_changed" | "full_rebuild" | "selected",
+  thresholds: CommandCentreThresholds,
+  usageImportedAt?: string,
+  asOf?: string,
+) {
+  return partitionClustersForBuild(clusters, mode, thresholds, usageImportedAt, asOf);
 }
 
 export function _testOnlyGroup(records: UniverseRecord[], publicDomains: Set<string>): OrganisationCluster[] {

@@ -1648,10 +1648,18 @@ function ccQueueInsightCounts(items) {
 }
 
 function ccSystemSummary(snapshot, scan) {
-  const monitored = scan?.universe_size ?? snapshot.organisations_discovered ?? 0;
-  const analysed = (snapshot.analyses_reused ?? 0) + (snapshot.analyses_refreshed ?? 0);
+  const monitored = scan?.universe_size ?? snapshot.universe_size ?? 0;
+  const analysed =
+    snapshot.organisations_analysed ??
+    new Set((snapshot.watch_items || []).map((item) => item.organisation_id)).size;
+  const awaiting =
+    snapshot.analyses_deferred ??
+    scan?.build_projection?.would_defer ??
+    0;
   const warnings = (snapshot.failures?.length ?? 0) + (snapshot.brief?.warnings?.length ?? 0);
-  return `${monitored} organisations monitored · ${analysed} analysed · ${warnings} warning${warnings === 1 ? "" : "s"}`;
+  let text = `${monitored} organisations monitored · ${analysed} analysed`;
+  if (awaiting > 0) text += ` · ${awaiting} awaiting analysis`;
+  return `${text} · ${warnings} warning${warnings === 1 ? "" : "s"}`;
 }
 
 function renderCcCommercialSnapshot(snapshot) {

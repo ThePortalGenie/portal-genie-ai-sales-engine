@@ -23,6 +23,7 @@ import {
   BACKFILL_MAX_ORGANISATIONS_EXAMINED_PER_VACANCY,
   BACKFILL_MAX_VACANCIES_PER_REFRESH,
   isWorthwhileBackfillReplacement,
+  _testOnlyPartitionClustersForBuild,
 } from "../src/intelligence/command-centre.js";
 import { ccPresentationBucket } from "../src/web/command-centre-presentation.js";
 import { createOperatorDecision } from "../src/intelligence/operator-decision-store.js";
@@ -628,7 +629,9 @@ test("deterministic selection limits expensive analysis when universe exceeds ca
     assert.equal(analyseCalls, 10);
     assert.equal(built.analyses_deferred, 40);
     assert.equal(built.universe_size, 80);
-    assert.equal(built.organisations_discovered, 50);
+    assert.equal(built.candidates_selected, 50);
+    assert.equal(built.organisations_analysed, 10);
+    assert.equal(built.organisations_discovered, 10);
   });
 });
 
@@ -666,7 +669,10 @@ test("first expanded build_changed reuses cached analyses and caps fresh OpenAI"
     );
     assert.equal(analyseCalls, 10);
     assert.equal(built.analyses_reused, 5);
+    assert.equal(built.analyses_refreshed, 10);
     assert.equal(built.analyses_deferred ?? 0, 0);
+    assert.equal(built.organisations_analysed, 15);
+    assert.equal(built.candidates_selected, 15);
     assert.ok(built.watch_items.length >= 5);
   });
 });
@@ -828,4 +834,190 @@ test("candidateSelectionScoreBreakdown favours strong lead over stale live deal"
   assert.ok(leadScore.total > dealScore.total);
   assert.equal(leadScore.lead, 55);
   assert.equal(dealScore.live_deal, 25);
+});
+
+test("partitionClustersForBuild allocates fresh budget to never-analysed after refresh", async () => {
+  await withStores(async () => {
+    const contacts = Array.from({ length: 50 }, (_, index) => ({
+      id: `c${index}`,
+      Full_Name: `Org ${index}`,
+      Email: `org${index}@part${index}.test`,
+      Modified_Time: "2026-08-20T10:00:00Z",
+    }));
+    const client = listingClient({ contacts });
+    const discovered = await discoverUniverse(client, { maxRecordsPerModule: 200 });
+    const clusters = groupUniverseRecords(discovered.records, PUBLIC);
+    for (const cluster of clusters.slice(0, 5)) {
+      const rep = cluster.representative;
+      writeStoredAnalysis({
+        ...stored({ recordId: rep.recordId, module: rep.module }),
+        evidenceFingerprint: fingerprintForCluster(cluster, loadUsageImportMeta().importedAt),
+        analysedAt: "2099-01-01T00:00:00Z",
+      });
+    }
+    const thresholds = { ...DEFAULT_COMMAND_CENTRE_THRESHOLDS, maxFreshOrganisationAnalysesPerBuild: 10 };
+    const partition = _testOnlyPartitionClustersForBuild(
+      clusters.slice(0, 50),
+      "build_changed",
+      thresholds,
+      loadUsageImportMeta().importedAt,
+      AS_OF,
+    );
+    assert.equal(partition.reusable, 5);
+    assert.equal(partition.freshInitial, 10);
+    assert.equal(partition.freshRefresh, 0);
+    assert.equal(partition.process.length, 15);
+    assert.equal(partition.deferred, 35);
+  });
+});
+
+test("build_changed progressively grows analysed set from 5 toward 50", async () => {
+  await withStores(async () => {
+    const contacts = Array.from({ length: 60 }, (_, index) => ({
+      id: `c${index}`,
+      Full_Name: `Org ${index}`,
+      Email: `org${index}@progressive${index}.test`,
+      Modified_Time: "2026-08-20T10:00:00Z",
+    }));
+    const client = listingClient({ contacts });
+    const discovered = await discoverUniverse(client, { maxRecordsPerModule: 200 });
+    const clusters = groupUniverseRecords(discovered.records, PUBLIC);
+    for (const cluster of clusters.slice(0, 5)) {
+      const rep = cluster.representative;
+      writeStoredAnalysis({
+        ...stored({ recordId: rep.recordId, module: rep.module }),
+        evidenceFingerprint: fingerprintForCluster(cluster, loadUsageImportMeta().importedAt),
+        analysedAt: "2099-01-01T00:00:00Z",
+      });
+    }
+    const deps = {
+      client,
+      publicDomains: PUBLIC,
+      now: () => new Date(AS_OF),
+      analyse: async (_module: string, recordId: string) => stored({ recordId }),
+    };
+    const expectedAnalysed = [15, 25, 35, 45, 50];
+    let analysedBefore = 5;
+    for (const expected of expectedAnalysed) {
+      let freshCalls = 0;
+      const built = await buildCommandCentre(
+        {
+          ...deps,
+          analyse: async (_module, recordId) => {
+            freshCalls += 1;
+            return stored({ recordId });
+          },
+        },
+        { mode: "build_changed", confirm: true, includeBriefSynthesis: false, maxOrganisations: 50 },
+      );
+      assert.equal(freshCalls, Math.min(10, expected - analysedBefore), `fresh calls reaching ${expected} analysed`);
+      assert.equal(built.organisations_analysed, expected);
+      assert.equal(built.universe_size, clusters.length);
+      assert.equal(built.candidates_selected, 50);
+      assert.equal(built.analyses_deferred ?? 0, 50 - expected);
+      analysedBefore = expected;
+    }
+  });
+});
+
+test("unchanged cached candidates do not consume fresh budget on build_changed", async () => {
+  await withStores(async () => {
+    const contacts = Array.from({ length: 20 }, (_, index) => ({
+      id: `c${index}`,
+      Full_Name: `Org ${index}`,
+      Email: `org${index}@reusebudget${index}.test`,
+      Modified_Time: "2026-08-20T10:00:00Z",
+    }));
+    const client = listingClient({ contacts });
+    const discovered = await discoverUniverse(client, { maxRecordsPerModule: 200 });
+    const clusters = groupUniverseRecords(discovered.records, PUBLIC);
+    for (const cluster of clusters) {
+      const rep = cluster.representative;
+      writeStoredAnalysis({
+        ...stored({ recordId: rep.recordId, module: rep.module }),
+        evidenceFingerprint: fingerprintForCluster(cluster, loadUsageImportMeta().importedAt),
+        analysedAt: "2099-01-01T00:00:00Z",
+      });
+    }
+    let freshCalls = 0;
+    const built = await buildCommandCentre(
+      {
+        client,
+        publicDomains: PUBLIC,
+        now: () => new Date(AS_OF),
+        analyse: async () => {
+          freshCalls += 1;
+          return stored();
+        },
+      },
+      { mode: "build_changed", confirm: true, includeBriefSynthesis: false, maxOrganisations: 20 },
+    );
+    assert.equal(freshCalls, 0);
+    assert.equal(built.analyses_reused, 20);
+    assert.equal(built.organisations_analysed, 20);
+  });
+});
+
+test("full_rebuild still analyses all selected candidates", async () => {
+  await withStores(async () => {
+    const contacts = Array.from({ length: 12 }, (_, index) => ({
+      id: `c${index}`,
+      Full_Name: `Org ${index}`,
+      Email: `org${index}@fullrebuild${index}.test`,
+      Modified_Time: "2026-08-20T10:00:00Z",
+    }));
+    const client = listingClient({ contacts });
+    let freshCalls = 0;
+    const built = await buildCommandCentre(
+      {
+        client,
+        publicDomains: PUBLIC,
+        now: () => new Date(AS_OF),
+        analyse: async (_module, recordId) => {
+          freshCalls += 1;
+          return stored({ recordId });
+        },
+      },
+      { mode: "full_rebuild", confirm: true, includeBriefSynthesis: false, maxOrganisations: 12 },
+    );
+    assert.equal(freshCalls, 12);
+    assert.equal(built.organisations_analysed, 12);
+    assert.equal(built.analyses_deferred ?? 0, 0);
+  });
+});
+
+test("recommendation count is not forced to equal analysed organisation count", async () => {
+  await withStores(async () => {
+    const client = listingClient({
+      contacts: Array.from({ length: 8 }, (_, index) => ({
+        id: `c${index}`,
+        Full_Name: `Org ${index}`,
+        Email: `org${index}@noaction${index}.test`,
+        Modified_Time: "2026-08-20T10:00:00Z",
+      })),
+    });
+    const noActionProfile = validSampleProfile({
+      recommended_action: "NO_ACTION",
+      recommended_action_reason: "Nothing to do.",
+    });
+    let freshCalls = 0;
+    const built = await buildCommandCentre(
+      {
+        client,
+        publicDomains: PUBLIC,
+        now: () => new Date(AS_OF),
+        analyse: async (_module, recordId) => {
+          freshCalls += 1;
+          return { ...stored({ recordId }), profile: noActionProfile };
+        },
+      },
+      { mode: "full_rebuild", confirm: true, includeBriefSynthesis: false, maxOrganisations: 8 },
+    );
+    assert.equal(freshCalls, 8);
+    assert.equal(built.organisations_analysed, 8);
+    const actionable = built.watch_items.filter(
+      (item) => item.next_best_action !== "NO_ACTION" && item.priority !== "P5" && item.actionability_kind !== "NO_ACTION",
+    );
+    assert.ok(actionable.length < built.organisations_analysed);
+  });
 });

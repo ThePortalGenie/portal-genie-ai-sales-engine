@@ -91,6 +91,7 @@ test("GET /assets/app.js includes commercial analysis action", async () => {
     assert.match(js, /CC_SNAPSHOT_VIEWS/);
     assert.match(js, /Scan details/);
     assert.match(js, /organisations monitored/);
+    assert.match(js, /awaiting analysis/);
     assert.doesNotMatch(js, /Scan estimate/);
     assert.match(js, /Focus now/);
     assert.doesNotMatch(js, /effective_queue_state === "WAIT"\) return true/);

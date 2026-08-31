@@ -323,6 +323,10 @@ export type PortfolioSnapshot = {
   organisations_discovered: number;
   /** Full reconstructed commercial universe size when known (may exceed organisations_discovered). */
   universe_size?: number;
+  /** Selected candidate capacity for this build (e.g. 50). */
+  candidates_selected?: number;
+  /** Unique organisations with watch items after this build. */
+  organisations_analysed?: number;
   watch_items: CommercialWatchItem[];
   ranking_note: string;
   stalled_count: number;
@@ -366,6 +370,12 @@ export type ScanEstimate = {
   };
   selection_method?: string;
   organisations_selected?: number;
+  build_projection?: {
+    would_analyse: number;
+    would_reuse: number;
+    would_fresh_analyse: number;
+    would_defer: number;
+  };
   organisations: Array<{
     organisation_id: string;
     organisation_name: string;
