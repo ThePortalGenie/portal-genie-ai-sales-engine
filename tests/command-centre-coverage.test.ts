@@ -19,6 +19,8 @@ import {
   fingerprintForCluster,
   refreshSnapshotWithBackfill,
   scanCommandCentre,
+  countBuildCandidatesAwaitingAnalysis,
+  countScanCandidatesAwaitingAnalysis,
   _testOnlySelect,
   BACKFILL_MAX_ORGANISATIONS_EXAMINED_PER_VACANCY,
   BACKFILL_MAX_VACANCIES_PER_REFRESH,
@@ -394,7 +396,9 @@ test("scan reports full universe separately from candidate selection", async () 
     assert.equal(scan.universe_size, 12);
     assert.equal(scan.organisations_discovered, 12);
     assert.equal(scan.organisations_selected, 6);
-    assert.match(scan.truncated_reason ?? "", /Candidate analysis limited to 6 organisations of 12 discovered/);
+    assert.match(scan.truncated_reason ?? "", /6 of 12 discovered organisations selected for commercial analysis \(capacity 6\)/);
+    assert.equal(scan.candidates_awaiting_analysis, 6);
+    assert.equal(scan.build_projection?.would_defer, 0);
     assert.equal(scan.tokens.openai_calls, 0);
   });
 });
@@ -631,6 +635,7 @@ test("deterministic selection limits expensive analysis when universe exceeds ca
     assert.equal(built.universe_size, 80);
     assert.equal(built.candidates_selected, 50);
     assert.equal(built.organisations_analysed, 10);
+    assert.equal(built.candidates_awaiting_analysis, 40);
     assert.equal(built.organisations_discovered, 10);
   });
 });
@@ -672,6 +677,7 @@ test("first expanded build_changed reuses cached analyses and caps fresh OpenAI"
     assert.equal(built.analyses_refreshed, 10);
     assert.equal(built.analyses_deferred ?? 0, 0);
     assert.equal(built.organisations_analysed, 15);
+    assert.equal(built.candidates_awaiting_analysis, 0);
     assert.equal(built.candidates_selected, 15);
     assert.ok(built.watch_items.length >= 5);
   });
@@ -912,6 +918,7 @@ test("build_changed progressively grows analysed set from 5 toward 50", async ()
       );
       assert.equal(freshCalls, Math.min(10, expected - analysedBefore), `fresh calls reaching ${expected} analysed`);
       assert.equal(built.organisations_analysed, expected);
+      assert.equal(built.candidates_awaiting_analysis, 50 - expected);
       assert.equal(built.universe_size, clusters.length);
       assert.equal(built.candidates_selected, 50);
       assert.equal(built.analyses_deferred ?? 0, 50 - expected);
@@ -1019,5 +1026,134 @@ test("recommendation count is not forced to equal analysed organisation count", 
       (item) => item.next_best_action !== "NO_ACTION" && item.priority !== "P5" && item.actionability_kind !== "NO_ACTION",
     );
     assert.ok(actionable.length < built.organisations_analysed);
+  });
+});
+
+test("candidate accounting: selected=50 analysed=5 implies awaiting=45 on scan", async () => {
+  await withStores(async () => {
+    const contacts = Array.from({ length: 55 }, (_, index) => ({
+      id: `c${index}`,
+      Full_Name: `Org ${index}`,
+      Email: `org${index}@acct${index}.test`,
+      Modified_Time: "2026-08-20T10:00:00Z",
+    }));
+    const client = listingClient({ contacts });
+    const discovered = await discoverUniverse(client, { maxRecordsPerModule: 200 });
+    const clusters = groupUniverseRecords(discovered.records, PUBLIC);
+    for (const cluster of clusters.slice(0, 5)) {
+      const rep = cluster.representative;
+      writeStoredAnalysis({
+        ...stored({ recordId: rep.recordId, module: rep.module }),
+        evidenceFingerprint: fingerprintForCluster(cluster, loadUsageImportMeta().importedAt),
+        analysedAt: "2099-01-01T00:00:00Z",
+      });
+    }
+    const scan = await scanCommandCentre(
+      { client, publicDomains: PUBLIC, analyse: async () => stored() },
+      { maxOrganisations: 50, persist: false },
+    );
+    assert.equal(scan.organisations_selected, 50);
+    assert.equal(scan.candidate_capacity, 50);
+    assert.equal(scan.analyses_reusable, 5);
+    assert.equal(scan.candidates_awaiting_analysis, 45);
+    assert.equal(scan.build_projection?.would_defer, 35);
+    assert.notEqual(scan.candidates_awaiting_analysis, scan.build_projection?.would_defer);
+    assert.equal(
+      countScanCandidatesAwaitingAnalysis(scan.organisations),
+      scan.candidates_awaiting_analysis,
+    );
+    assert.equal(countBuildCandidatesAwaitingAnalysis(50, 5), 45);
+  });
+});
+
+test("build projection would_defer is not used as cumulative awaiting status", async () => {
+  await withStores(async () => {
+    const contacts = Array.from({ length: 55 }, (_, index) => ({
+      id: `c${index}`,
+      Full_Name: `Org ${index}`,
+      Email: `org${index}@proj${index}.test`,
+      Modified_Time: "2026-08-20T10:00:00Z",
+    }));
+    const client = listingClient({ contacts });
+    const discovered = await discoverUniverse(client, { maxRecordsPerModule: 200 });
+    const clusters = groupUniverseRecords(discovered.records, PUBLIC);
+    for (const cluster of clusters.slice(0, 5)) {
+      const rep = cluster.representative;
+      writeStoredAnalysis({
+        ...stored({ recordId: rep.recordId, module: rep.module }),
+        evidenceFingerprint: fingerprintForCluster(cluster, loadUsageImportMeta().importedAt),
+        analysedAt: "2099-01-01T00:00:00Z",
+      });
+    }
+    let freshCalls = 0;
+    const built = await buildCommandCentre(
+      {
+        client,
+        publicDomains: PUBLIC,
+        now: () => new Date(AS_OF),
+        analyse: async (_module, recordId) => {
+          freshCalls += 1;
+          return stored({ recordId });
+        },
+      },
+      { mode: "build_changed", confirm: true, includeBriefSynthesis: false, maxOrganisations: 50 },
+    );
+    assert.equal(freshCalls, 10);
+    assert.equal(built.organisations_analysed, 15);
+    assert.equal(built.candidates_awaiting_analysis, 35);
+    assert.equal(built.analyses_deferred, 35);
+    assert.equal(built.candidates_selected, 50);
+  });
+});
+
+test("failed analysis remains awaiting and is not counted as analysed", async () => {
+  await withStores(async () => {
+    const contacts = Array.from({ length: 15 }, (_, index) => ({
+      id: `c${index}`,
+      Full_Name: `Org ${index}`,
+      Email: `org${index}@fail${index}.test`,
+      Modified_Time: "2026-08-20T10:00:00Z",
+    }));
+    const client = listingClient({ contacts });
+    let freshCalls = 0;
+    const built = await buildCommandCentre(
+      {
+        client,
+        publicDomains: PUBLIC,
+        now: () => new Date(AS_OF),
+        analyse: async (_module, recordId) => {
+          freshCalls += 1;
+          if (freshCalls > 5) {
+            return { ...stored({ recordId }), success: false, profile: undefined, error: "OpenAI failed." };
+          }
+          return stored({ recordId });
+        },
+      },
+      { mode: "build_changed", confirm: true, includeBriefSynthesis: false, maxOrganisations: 15 },
+    );
+    assert.equal(freshCalls, 10);
+    assert.equal(built.organisations_analysed, 5);
+    assert.equal(built.candidates_awaiting_analysis, 10);
+    assert.equal(built.analyses_failed, 5);
+  });
+});
+
+test("selector returning fewer than capacity is represented accurately", async () => {
+  await withStores(async () => {
+    const contacts = Array.from({ length: 12 }, (_, index) => ({
+      id: `c${index}`,
+      Full_Name: `Org ${index}`,
+      Email: `org${index}@small${index}.test`,
+      Modified_Time: "2026-08-20T10:00:00Z",
+    }));
+    const client = listingClient({ contacts });
+    const scan = await scanCommandCentre(
+      { client, publicDomains: PUBLIC, analyse: async () => stored() },
+      { maxOrganisations: 50, persist: false },
+    );
+    assert.equal(scan.organisations_selected, 12);
+    assert.equal(scan.candidate_capacity, 50);
+    assert.equal(scan.candidates_awaiting_analysis, 12);
+    assert.match(scan.truncated_reason ?? "", /12 of 12 discovered organisations selected/);
   });
 });

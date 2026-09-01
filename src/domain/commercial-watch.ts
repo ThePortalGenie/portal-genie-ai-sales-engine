@@ -323,10 +323,14 @@ export type PortfolioSnapshot = {
   organisations_discovered: number;
   /** Full reconstructed commercial universe size when known (may exceed organisations_discovered). */
   universe_size?: number;
-  /** Selected candidate capacity for this build (e.g. 50). */
+  /** Configured maximum candidate organisations (e.g. 50). */
+  candidate_capacity?: number;
+  /** Selected candidate count actually chosen for this build. */
   candidates_selected?: number;
   /** Unique organisations with watch items after this build. */
   organisations_analysed?: number;
+  /** Selected candidates still lacking a usable completed analysis. */
+  candidates_awaiting_analysis?: number;
   watch_items: CommercialWatchItem[];
   ranking_note: string;
   stalled_count: number;
@@ -339,6 +343,7 @@ export type PortfolioSnapshot = {
   analyses_reused: number;
   analyses_refreshed: number;
   analyses_failed: number;
+  /** Fresh analyses not attempted this build due to maxFreshOrganisationAnalysesPerBuild. Not cumulative awaiting. */
   analyses_deferred?: number;
   truncated?: boolean;
   truncated_reason?: string;
@@ -370,6 +375,9 @@ export type ScanEstimate = {
   };
   selection_method?: string;
   organisations_selected?: number;
+  candidate_capacity?: number;
+  /** Selected candidates lacking a usable stored analysis (cumulative, not per-build deferral). */
+  candidates_awaiting_analysis?: number;
   build_projection?: {
     would_analyse: number;
     would_reuse: number;

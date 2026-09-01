@@ -31,8 +31,7 @@ export function classifyActionabilityKind(input: {
     input.executability === "WAITING_FOR_TIME" ||
     input.executability === "WAITING_FOR_CUSTOMER" ||
     input.action === "WAIT" ||
-    input.stalledState === "SCHEDULED_FOLLOW_UP" ||
-    input.stalledState === "WAITING_ON_CUSTOMER"
+    input.stalledState === "SCHEDULED_FOLLOW_UP"
   ) {
     return "WAIT";
   }

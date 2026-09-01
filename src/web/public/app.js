@@ -1653,8 +1653,8 @@ function ccSystemSummary(snapshot, scan) {
     snapshot.organisations_analysed ??
     new Set((snapshot.watch_items || []).map((item) => item.organisation_id)).size;
   const awaiting =
-    snapshot.analyses_deferred ??
-    scan?.build_projection?.would_defer ??
+    snapshot.candidates_awaiting_analysis ??
+    scan?.candidates_awaiting_analysis ??
     0;
   const warnings = (snapshot.failures?.length ?? 0) + (snapshot.brief?.warnings?.length ?? 0);
   let text = `${monitored} organisations monitored · ${analysed} analysed`;

@@ -36,13 +36,15 @@ export function classifyStalled(input: WatchEvidenceInput): { state: StalledStat
 
   if (
     follow === "UNKNOWN" &&
-    input.unansweredOutboundAttempts >= 1 &&
+    input.unansweredOutboundAttempts >= thresholds.unansweredAttemptsForStall &&
     quietDays !== undefined &&
     quietDays < thresholds.quietDaysWatch
   ) {
     return {
       state: "WAITING_ON_CUSTOMER",
-      reasons: ["Recent outreach is unanswered. Await a customer response before chasing again today."],
+      reasons: [
+        `${input.unansweredOutboundAttempts} unanswered outbound attempts. Await a customer response before chasing again.`,
+      ],
     };
   }
 

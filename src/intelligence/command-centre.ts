@@ -105,6 +105,30 @@ export function reuseDecision(
   return { stored, reuse: "reuse", reason: "Legacy analysis is still current (no newer listing, usage import, or Sales Event)." };
 }
 
+/** Selected candidates still lacking a usable completed stored analysis. */
+export function countScanCandidatesAwaitingAnalysis(
+  organisations: Array<{ reuse: "reuse" | "refresh" | "missing" }>,
+): number {
+  return organisations.filter((item) => item.reuse !== "reuse").length;
+}
+
+/** Cumulative awaiting count after a build: selected minus successfully analysed orgs. */
+export function countBuildCandidatesAwaitingAnalysis(candidatesSelected: number, organisationsAnalysed: number): number {
+  return Math.max(0, candidatesSelected - organisationsAnalysed);
+}
+
+function candidateLimitReason(
+  selectedCount: number,
+  universeSize: number,
+  capacity: number | undefined,
+): string | undefined {
+  const cap = capacity ?? selectedCount;
+  if (universeSize > selectedCount || cap > selectedCount) {
+    return `${selectedCount} of ${universeSize} discovered organisations selected for commercial analysis (capacity ${cap}).`;
+  }
+  return undefined;
+}
+
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let cursor = 0;
@@ -366,6 +390,12 @@ export async function scanCommandCentre(
     : selectClusters(clusters, maxOrganisations, asOf, thresholds.timeZone);
   const candidateAudit = candidateAuditForSelection(selected);
   const buildProjection = partitionClustersForBuild(selected, "build_changed", thresholds, usageImportedAt, asOf);
+  const candidatesAwaitingAnalysis = countScanCandidatesAwaitingAnalysis(
+    selected.map((cluster) => {
+      const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
+      return reuseDecision(cluster, fingerprint, usageImportedAt);
+    }),
+  );
   const organisations = selected.map((cluster) => {
     const fingerprint = fingerprintForCluster(cluster, usageImportedAt);
     const decision = reuseDecision(cluster, fingerprint, usageImportedAt);
@@ -390,6 +420,8 @@ export async function scanCommandCentre(
     organisations_discovered: clusters.length,
     organisations_selected: selected.length,
     universe_size: clusters.length,
+    candidate_capacity: maxOrganisations,
+    candidates_awaiting_analysis: candidatesAwaitingAnalysis,
     records_by_module: countRecordsByModule(discovered.records),
     universe_audit: universeAudit,
     candidate_audit: {
@@ -406,13 +438,11 @@ export async function scanCommandCentre(
     analyses_reusable: organisations.filter((item) => item.reuse === "reuse").length,
     analyses_require_refresh: organisations.filter((item) => item.reuse !== "reuse").length,
     retrieval_warnings: discovered.failures.map((item) => item.message),
-    truncated: discovered.truncated || Boolean(maxOrganisations && clusters.length > maxOrganisations),
+    truncated: discovered.truncated || selected.length < universeAudit.reconstructed_organisations,
     truncated_reason:
-      maxOrganisations && clusters.length > maxOrganisations
-        ? `Candidate analysis limited to ${maxOrganisations} organisations of ${clusters.length} discovered. Full universe remains available for deterministic selection.`
-        : discovered.truncated
-          ? `Module listing capped at ${thresholds.maxRecordsPerModule} records.`
-          : undefined,
+      discovered.truncated
+        ? `Module listing capped at ${thresholds.maxRecordsPerModule} records.`
+        : candidateLimitReason(selected.length, clusters.length, maxOrganisations),
     organisations,
     first_party_organisations: organisations
       .filter((item) => item.first_party)
@@ -520,6 +550,7 @@ export async function buildCommandCentre(
   }
 
   const organisationsAnalysed = new Set(items.map((item) => item.organisation_id)).size;
+  const candidatesAwaitingAnalysis = countBuildCandidatesAwaitingAnalysis(clusters.length, organisationsAnalysed);
 
   const snapshot: PortfolioSnapshot = {
     generated_at: asOf,
@@ -528,8 +559,10 @@ export async function buildCommandCentre(
     mode: options.mode,
     organisations_discovered: organisationsAnalysed,
     universe_size: universe.length,
+    candidate_capacity: maxOrganisations,
     candidates_selected: clusters.length,
     organisations_analysed: organisationsAnalysed,
+    candidates_awaiting_analysis: candidatesAwaitingAnalysis,
     watch_items: items,
     ranking_note: PRIORITY_TIEBREAK,
     stalled_count: items.filter((item) => item.stalled_state === "STALLED").length,
@@ -559,12 +592,9 @@ export async function buildCommandCentre(
     truncated: discovered.truncated || clusters.length < universe.length || analysesDeferred > 0,
     truncated_reason:
       analysesDeferred > 0
-        ? `Progressive analysis: ${organisationsAnalysed} of ${clusters.length} selected candidates analysed; ${analysesDeferred} awaiting fresh analysis (max ${thresholds.maxFreshOrganisationAnalysesPerBuild} new per build).`
-        : clusters.length < universe.length
-          ? `Candidate analysis limited to ${clusters.length} organisations of ${universe.length} discovered. Full universe remains available for deterministic selection.`
-          : discovered.truncated
-            ? `Module listing capped at ${thresholds.maxRecordsPerModule} records.`
-            : undefined,
+        ? `Progressive analysis: ${organisationsAnalysed} of ${clusters.length} selected candidates analysed; ${candidatesAwaitingAnalysis} awaiting analysis (${analysesDeferred} deferred this build; max ${thresholds.maxFreshOrganisationAnalysesPerBuild} fresh per build).`
+        : candidateLimitReason(clusters.length, universe.length, maxOrganisations) ??
+          (discovered.truncated ? `Module listing capped at ${thresholds.maxRecordsPerModule} records.` : undefined),
   };
   writePortfolioSnapshot(snapshot);
   return snapshot;

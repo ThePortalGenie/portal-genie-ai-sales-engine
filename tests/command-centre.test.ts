@@ -655,9 +655,63 @@ test("Portal Genie and Nagging Panda stay independent watch items", () => {
   assert.doesNotMatch(np?.why_this_action ?? "", /Call Sarah/);
 });
 
-test("recent unanswered outreach is WAIT / do not chase, not email now", () => {
+test("recent unanswered email blocks repeat email but preserves phone call", () => {
+  const outboundEmail = [
+    {
+      messageId: "m1",
+      threadId: null,
+      at: "2026-08-25T10:00:00Z",
+      direction: "outbound" as const,
+      directionEvidence: "test",
+      sender: { name: null, email: "geoff@test" },
+      recipients: [],
+      cc: [],
+      subject: "Follow up",
+      bodyText: "Checking in",
+      currentMessageText: "Checking in",
+      quoteStrippingConfidence: "HIGH" as const,
+      strippedQuotedHistory: false,
+      bodyTruncated: false,
+      sourceType: "crm_email" as const,
+      hasAttachment: false,
+      ownerRecordId: "c1",
+      ownerName: "Sarah",
+    },
+  ];
+  const [phoneItem] = watchItemsFromAnalysis(
+    stored({ organisationGraph: graph({ emails: outboundEmail }) }),
+    { organisationId: "domain:abc.test", organisationName: "ABC Accounting", reuse: "reused", asOf: AS_OF },
+  );
+  assert.equal(phoneItem?.next_best_action, "PHONE_CALL");
+  assert.equal(phoneItem?.executability, "EXECUTABLE_NOW");
+  assert.notEqual(phoneItem?.stalled_state, "WAITING_ON_CUSTOMER");
+  assert.equal(phoneItem?.actionability_kind, "CUSTOMER_ACTION");
+
+  const [emailItem] = watchItemsFromAnalysis(
+    stored({
+      profile: validSampleProfile({
+        recommended_action: "PERSONAL_EMAIL",
+        recommended_action_reason: "Send a follow-up email.",
+        best_contact: "Sarah",
+      }),
+      organisationGraph: graph({ emails: outboundEmail }),
+    }),
+    { organisationId: "domain:abc.test", organisationName: "ABC Accounting", reuse: "reused", asOf: AS_OF },
+  );
+  assert.equal(emailItem?.next_best_action, "NO_ACTION");
+  assert.match(emailItem?.why_this_action ?? "", /Do not send another email/i);
+});
+
+test("multiple unanswered outbound attempts preserve stronger wait behaviour", () => {
   const [item] = watchItemsFromAnalysis(
     stored({
+      profile: {
+        ...validSampleProfile({
+          recommended_action_reason: "Follow up again.",
+          best_contact: "Sarah",
+        }),
+        recommended_action: "FOLLOW_UP" as never,
+      },
       organisationGraph: graph({
         emails: [
           {
@@ -669,9 +723,29 @@ test("recent unanswered outreach is WAIT / do not chase, not email now", () => {
             sender: { name: null, email: "geoff@test" },
             recipients: [],
             cc: [],
-            subject: "Follow up",
-            bodyText: "Checking in",
-            currentMessageText: "Checking in",
+            subject: "One",
+            bodyText: "One",
+            currentMessageText: "One",
+            quoteStrippingConfidence: "HIGH",
+            strippedQuotedHistory: false,
+            bodyTruncated: false,
+            sourceType: "crm_email",
+            hasAttachment: false,
+            ownerRecordId: "c1",
+            ownerName: "Sarah",
+          },
+          {
+            messageId: "m2",
+            threadId: null,
+            at: "2026-08-20T10:00:00Z",
+            direction: "outbound",
+            directionEvidence: "test",
+            sender: { name: null, email: "geoff@test" },
+            recipients: [],
+            cc: [],
+            subject: "Two",
+            bodyText: "Two",
+            currentMessageText: "Two",
             quoteStrippingConfidence: "HIGH",
             strippedQuotedHistory: false,
             bodyTruncated: false,
@@ -688,8 +762,7 @@ test("recent unanswered outreach is WAIT / do not chase, not email now", () => {
   assert.equal(item?.stalled_state, "WAITING_ON_CUSTOMER");
   assert.equal(item?.next_best_action, "WAIT");
   assert.equal(item?.executability, "WAITING_FOR_CUSTOMER");
-  assert.equal(item?.priority, "P4");
-  assert.match(item?.why_this_action ?? "", /Await a customer response/i);
+  assert.ok(item?.risk_signals.some((signal) => signal.code === "MULTIPLE_OUTBOUND_ATTEMPTS_UNANSWERED"));
 });
 
 test("historical Closed Won does not force NO_ACTION the way Closed Lost does", () => {

@@ -77,7 +77,7 @@ export function classifyExecutability(input: {
   if (input.timing === "WAIT_UNTIL" || (input.action === "WAIT" && input.stalledState === "SCHEDULED_FOLLOW_UP")) {
     return "WAITING_FOR_TIME";
   }
-  if (input.stalledState === "WAITING_ON_CUSTOMER" || input.action === "WAIT") return "WAITING_FOR_CUSTOMER";
+  if (input.action === "WAIT") return "WAITING_FOR_CUSTOMER";
   if (input.timing === "NO_ACTION_REQUIRED") return "NO_ACTION_REQUIRED";
   return "EXECUTABLE_NOW";
 }
@@ -126,7 +126,7 @@ export function priorityBand(item: {
   if (item.stalled_state === "STALLED") return "P2";
   if (item.liveDeal && item.action_timing !== "WAIT_UNTIL" && item.action_timing !== "NO_ACTION_REQUIRED") return "P2";
   if (item.stalled_state === "WATCH" || item.next_best_action === "NURTURE") return "P3";
-  if (item.action_timing === "WAIT_UNTIL" || item.stalled_state === "SCHEDULED_FOLLOW_UP" || item.stalled_state === "WAITING_ON_CUSTOMER") {
+  if (item.action_timing === "WAIT_UNTIL" || item.stalled_state === "SCHEDULED_FOLLOW_UP") {
     return "P4";
   }
   return "P5";

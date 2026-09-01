@@ -25,6 +25,7 @@ import {
   registrationAwareWhy,
 } from "./product-registration.js";
 import { productUsageContext, suppressUsageCheckWithoutTelemetry } from "./usage-action.js";
+import { applyAntiChaseToAction } from "./anti-chase.js";
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -307,7 +308,8 @@ export function watchItemsFromAnalysis(
     const registration = classifyProductRegistration(product, productDeals);
     let action: WatchAction = overrideAction(evidence, asWatchAction(profile?.recommended_action));
     action = refineActionForRegistration(action, registration);
-    if (stalled.state === "WAITING_ON_CUSTOMER") action = "WAIT";
+    const antiChase = applyAntiChaseToAction(action, evidence);
+    action = antiChase.action;
     if (scheduledInstant === "FUTURE") action = "WAIT";
     if (historicalLostOnly && stalled.state !== "WAITING_ON_US") action = "NO_ACTION";
     const usageResolution = suppressUsageCheckWithoutTelemetry(product, action, usageContext);
@@ -330,13 +332,13 @@ export function watchItemsFromAnalysis(
     const whenLabel = commitment.at ? formatZonedDateTime(commitment.at, thresholds.timeZone) ?? commitment.at : undefined;
     const why = usageResolution.suppressed
       ? usageResolution.reason ?? "Missing usage evidence is not a customer action."
-      : scheduledInstant === "FUTURE"
+      : antiChase.reason
+        ? antiChase.reason
+        : scheduledInstant === "FUTURE"
           ? `Wait until ${whenLabel}. Explicit commitment overrides generic urgency. Do not chase before that time.`
-          : stalled.state === "WAITING_ON_CUSTOMER"
-            ? stalled.reasons[0] ?? "Await a customer response. Do not chase again today."
-            : action === "NO_ACTION" && historicalLostOnly
-              ? `${product === "NAGGING_PANDA" ? "Nagging Panda" : "Portal Genie"} is a historical Closed Lost relationship. It is independent of any current opportunity on the other product.`
-              : profile?.recommended_action_reason || profile?.relationship_summary || "Deterministic next action from retrieved evidence.";
+          : action === "NO_ACTION" && historicalLostOnly
+            ? `${product === "NAGGING_PANDA" ? "Nagging Panda" : "Portal Genie"} is a historical Closed Lost relationship. It is independent of any current opportunity on the other product.`
+            : profile?.recommended_action_reason || profile?.relationship_summary || "Deterministic next action from retrieved evidence.";
     const summary =
       product === "NAGGING_PANDA" && historicalLostOnly
         ? `${options.organisationName} · Nagging Panda historical Closed Lost. Independent of Portal Genie.`
